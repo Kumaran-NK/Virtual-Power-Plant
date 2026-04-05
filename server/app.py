@@ -9,15 +9,20 @@ POST /step           Take one action
 GET  /state          Return current ground-truth state
 GET  /tasks          List available tasks + action schema
 GET  /grader         Return episode score (0.0–1.0)
-GET  /baseline       Return pre-computed baseline LLM scores
+GET  /baseline       Return (and optionally recompute) baseline LLM scores
 GET  /health         Liveness probe (used by Docker HEALTHCHECK)
 """
 
 import json
 import os
+import subprocess
+import sys
+import tempfile
+import threading
 from contextlib import asynccontextmanager
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from models import VppAction, VppObservation, VppState
@@ -47,6 +52,11 @@ app = FastAPI(
 
 env: VppEnvironment | None = None
 
+# Baseline computation state
+_baseline_lock       = threading.Lock()
+_baseline_running    = False
+_baseline_result     = None      # cached last result
+
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -54,7 +64,10 @@ env: VppEnvironment | None = None
 
 def _require_env() -> VppEnvironment:
     if env is None:
-        raise HTTPException(status_code=400, detail="Environment not initialised — call /reset first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Environment not initialised — call /reset first.",
+        )
     return env
 
 
@@ -69,17 +82,22 @@ async def health():
 
 
 @app.post("/reset")
-async def reset(task_id: str = Query(..., description="Task ID: easy-arbitrage | medium-forecast-error | hard-frequency-response")):
-    """
-    Reset the environment and start a new episode.
-
-    Returns the initial observation.
-    """
+async def reset(
+    task_id: str = Query(
+        ...,
+        description="Task ID: easy-arbitrage | medium-forecast-error | hard-frequency-response",
+    )
+):
+    """Reset the environment and start a new episode. Returns the initial observation."""
     global env
     if env is None:
         env = VppEnvironment()
 
-    valid_tasks = {"easy-arbitrage", "medium-forecast-error", "hard-frequency-response"}
+    valid_tasks = {
+        "easy-arbitrage",
+        "medium-forecast-error",
+        "hard-frequency-response",
+    }
     if task_id not in valid_tasks:
         raise HTTPException(
             status_code=422,
@@ -92,24 +110,18 @@ async def reset(task_id: str = Query(..., description="Task ID: easy-arbitrage |
 
 @app.post("/step")
 async def step(action: VppAction):
-    """
-    Take one action in the environment.
-
-    Returns observation, reward, done flag, and diagnostic info.
-    """
+    """Take one action. Returns observation, reward, done flag, and diagnostic info."""
     e = _require_env()
     if e.state is None:
         raise HTTPException(status_code=400, detail="Call /reset before /step.")
     if e.state.done:
-        raise HTTPException(status_code=400, detail="Episode finished — call /reset to start a new one.")
+        raise HTTPException(
+            status_code=400,
+            detail="Episode finished — call /reset to start a new one.",
+        )
 
     obs, reward, done, info = e.step(action)
-    return {
-        "observation": obs,
-        "reward": reward,
-        "done": done,
-        "info": info,
-    }
+    return {"observation": obs, "reward": reward, "done": done, "info": info}
 
 
 @app.get("/state")
@@ -121,12 +133,7 @@ async def get_state():
 
 @app.get("/tasks")
 async def get_tasks():
-    """
-    List all available tasks and the action schema.
-
-    Used by the OpenEnv validator and by agent frameworks to discover
-    what actions are valid.
-    """
+    """List all available tasks and the action schema."""
     return {
         "tasks": [
             {
@@ -151,7 +158,7 @@ async def get_tasks():
             {
                 "id": "hard-frequency-response",
                 "description": (
-                    "Grid stress: a single-step 10× price spike at 12:30 (step 50). "
+                    "Grid stress: a single-step 10× price spike at 12:30 (step 26). "
                     "Grid frequency drops to 49.5 Hz — agent must discharge immediately. "
                     "If batteries are depleted before the spike, revenue is lost. "
                     "Requires look-ahead planning and reserve management. Profit target: $1000."
@@ -180,32 +187,117 @@ async def get_grader_score():
     score = env.get_current_task_score()
     state = env.state
     return {
-        "score": score,
-        "cumulative_profit_usd": state.cumulative_profit_usd,
-        "safety_violations": state.safety_violations_count,
-        "grid_emergencies_ignored": state.grid_emergencies_ignored,
-        "steps_completed": state.current_step,
-        "done": state.done,
+        "score":                       score,
+        "cumulative_profit_usd":       state.cumulative_profit_usd,
+        "safety_violations":           state.safety_violations_count,
+        "grid_emergencies_ignored":    state.grid_emergencies_ignored,
+        "steps_completed":             state.current_step,
+        "done":                        state.done,
     }
 
 
-@app.get("/baseline")
-async def get_baseline():
-    """
-    Return pre-computed baseline scores produced by baseline_inference.py.
+# ---------------------------------------------------------------------------
+# /baseline — dynamic or cached baseline scores
+# ---------------------------------------------------------------------------
 
-    These scores represent a Llama-3 LLM agent playing each task with a
-    zero-shot prompt — no fine-tuning, no RL.
+def _run_baseline_subprocess() -> dict:
     """
-    baseline_path = os.path.join(os.path.dirname(__file__), "..", "baseline_scores.json")
+    Execute baseline_inference.py in a subprocess and return parsed scores.
+
+    Passes --json-only so the script emits only a JSON blob to stdout.
+    Falls back to cached file if the subprocess fails.
+    """
+    global _baseline_result, _baseline_running
+
+    baseline_script = os.path.join(os.path.dirname(__file__), "..", "baseline_inference.py")
+    baseline_script = os.path.abspath(baseline_script)
+
+    env_vars = {**os.environ, "VPP_SERVER_URL": "http://localhost:7860"}
+
+    try:
+        result = subprocess.run(
+            [sys.executable, baseline_script, "--json-only"],
+            capture_output=True,
+            text=True,
+            timeout=180,          # 3-minute hard cap
+            env=env_vars,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            scores = json.loads(result.stdout.strip())
+            # Persist for future requests
+            out_path = os.path.join(os.path.dirname(__file__), "..", "baseline_scores.json")
+            with open(out_path, "w") as f:
+                json.dump(scores, f, indent=2)
+            _baseline_result = scores
+            return scores
+        else:
+            stderr_snippet = (result.stderr or "")[:500]
+            return {"error": "Baseline script returned non-zero", "details": stderr_snippet}
+
+    except subprocess.TimeoutExpired:
+        return {"error": "Baseline computation timed out (>180 s). Try again."}
+    except json.JSONDecodeError as e:
+        return {"error": f"Could not parse baseline output as JSON: {e}"}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        with _baseline_lock:
+            _baseline_running = False
+
+
+@app.get("/baseline")
+async def get_baseline(
+    refresh: bool = Query(
+        False,
+        description="Set to true to re-run the baseline inference script synchronously.",
+    )
+):
+    """
+    Return pre-computed baseline scores.
+
+    By default returns the cached baseline_scores.json.
+    Pass ?refresh=true to recompute live (takes ~2 minutes, requires API key).
+    """
+    global _baseline_running, _baseline_result
+
+    # If live refresh requested, run the subprocess synchronously
+    if refresh:
+        with _baseline_lock:
+            if _baseline_running:
+                return JSONResponse(
+                    status_code=202,
+                    content={"status": "Baseline already running. Check back shortly."},
+                )
+            _baseline_running = True
+
+        scores = _run_baseline_subprocess()
+        return scores
+
+    # Try in-memory cache first
+    if _baseline_result is not None:
+        return _baseline_result
+
+    # Fall back to file
+    baseline_path = os.path.join(
+        os.path.dirname(__file__), "..", "baseline_scores.json"
+    )
     try:
         with open(baseline_path, "r") as f:
             scores = json.load(f)
+        _baseline_result = scores
         return scores
     except FileNotFoundError:
-        # Fallback stubs so the endpoint always returns valid JSON
         return {
-            "easy-arbitrage": {"score": 0.0, "note": "Run baseline_inference.py to generate scores."},
-            "medium-forecast-error": {"score": 0.0, "note": "Run baseline_inference.py to generate scores."},
-            "hard-frequency-response": {"score": 0.0, "note": "Run baseline_inference.py to generate scores."},
+            "easy-arbitrage": {
+                "score": 0.0,
+                "note": "Run baseline_inference.py or call /baseline?refresh=true",
+            },
+            "medium-forecast-error": {
+                "score": 0.0,
+                "note": "Run baseline_inference.py or call /baseline?refresh=true",
+            },
+            "hard-frequency-response": {
+                "score": 0.0,
+                "note": "Run baseline_inference.py or call /baseline?refresh=true",
+            },
         }

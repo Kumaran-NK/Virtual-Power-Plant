@@ -4,19 +4,19 @@ display_name: "Virtual Power Plant Orchestrator"
 description: >
   Manage 100 home batteries in a simulated neighbourhood to maximize grid
   profit while maintaining safety constraints. One step = 15 minutes.
-  96 steps = 24-hour episode.
+  48 steps = 12-hour episode. Two home zones (Zone A standard, Zone B with EVs).
 
 tasks:
   - id: "easy-arbitrage"
-    description: "High solar, low demand, flat $50/MWh price. Profit target $500."
+    description: "High solar, low demand, flat $50/MWh price. Sell surplus. Profit target $250."
     difficulty: easy
 
   - id: "medium-forecast-error"
-    description: "Heatwave: 4× AC demand spike 10:00–14:00. Sinusoidal pricing. Profit target $200."
+    description: "Heatwave: 4× AC demand spike 10:00–14:00. Sinusoidal pricing. Profit target $100."
     difficulty: medium
 
   - id: "hard-frequency-response"
-    description: "Grid stress: single-step 10× price spike + frequency emergency at step 50. Profit target $1000."
+    description: "Grid stress: 10× price spike + frequency emergency at step 26 (12:30). Profit target $500."
     difficulty: hard
 
 type: space
@@ -30,3 +30,4 @@ tags:
   - optimization
   - battery-management
   - smart-grid
+  - openenv
