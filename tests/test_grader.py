@@ -64,7 +64,8 @@ def run_full_episode(env, charge_rate: float = 0.0, reserve: float = 0.2):
 
 class TestScoreRange:
     def test_idle_score_is_zero(self, easy_env):
-        score = run_full_episode(easy_env, charge_rate=0.0)
+        run_full_episode(easy_env, charge_rate=0.0)
+        score = easy_env.get_pareto_score().profit_score
         assert score == 0.0, "Idle agent makes no profit → score = 0"
 
     def test_score_is_float(self, easy_env):
@@ -97,7 +98,7 @@ class TestRewardGradient:
     def test_violations_reduce_score(self, env):
         """High reserve floor forces violations → lower score."""
         env.reset("easy-arbitrage")
-        no_viol = run_full_episode(env, charge_rate=-0.3, reserve=0.0)
+        no_viol = run_full_episode(env, charge_rate=-1.0, reserve=0.0)
 
         env.reset("easy-arbitrage")
         with_viol = run_full_episode(env, charge_rate=-1.0, reserve=0.99)

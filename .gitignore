@@ -57,6 +57,15 @@ vpp_tensorboard/
 Thumbs.db
 
 # =========================
+# Testing
+# =========================
+.pytest_cache/
+pytest_*.txt
+.coverage
+htmlcov/
+.tox/
+
+# =========================
 # Keep required files
 # =========================
 !baseline_scores.json

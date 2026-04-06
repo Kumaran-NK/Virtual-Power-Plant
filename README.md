@@ -1,299 +1,208 @@
-# Virtual Power Plant Orchestrator
+# Virtual Power Plant Orchestrator — Extended Edition
 
-> **OpenEnv environment** — an AI agent manages 100 home batteries in a simulated neighbourhood to maximise grid profit while maintaining safety constraints across three difficulty tiers.
+> **OpenEnv environment** — an AI agent manages 100 home batteries in a simulated neighbourhood to maximise a **multi-objective Pareto score** across five difficulty tiers, incorporating battery degradation, carbon credits, P2P trading, demand-response auctions, and grid islanding emergencies.
 
 ---
 
-## Motivation
+## What's New (Extended Edition)
 
-Renewable energy is intermittent. Solar panels generate power only when the sun shines, but cities need electricity 24 hours a day. In 2026, **Virtual Power Plants (VPPs)** solve this by aggregating thousands of home batteries into a single grid-scale asset that can be charged when energy is cheap and discharged when it is scarce.
-
-This environment places an AI agent in the role of a VPP operator managing a neighbourhood of **100 homes**, split into two zones:
-
-| Zone | Homes | Special Feature |
-|------|-------|-----------------|
-| Zone A | 000–039 | Standard homes, predictable demand |
-| Zone B | 040–099 | Homes with EV chargers, higher evening load |
-
-Each home has a **13.5 kWh battery** and a **5 kW solar panel**. The agent must:
-
-- Decide every 15 minutes whether to **buy** energy from the grid (charge), **sell** energy back (discharge), or **idle**.
-- Maximise financial profit over a 12-hour episode.
-- Respect a hard safety constraint: no battery may drop below the reserved level.
-- Respond instantly to grid emergencies (frequency drop events).
+| Feature | Description | Impact |
+|---|---|---|
+| **Battery Degradation (SoH)** | Each cycle degrades capacity by 0.001 per full cycle; SoH floors at 80% | New temporal objective: earn money without killing batteries |
+| **Carbon Credits Subsystem** | Solar earns 0.05 credits/kWh; grid purchase in high-emission hours costs 0.08 credits/kWh | Multi-objective grader: profit + carbon together |
+| **Forecast Confidence Bands** | `forecast_price_uncertainty` and `forecast_solar_uncertainty` grow with horizon | Enables risk-averse agent behaviour |
+| **Pareto Multi-objective Grader** | 5-vector score: profit (50%) + safety (20%) + carbon (15%) + degradation (10%) + DR (5%) | Matches real VPP operator objectives |
+| **P2P Energy Trading** | Zone B solar surplus routes to Zone A at midpoint price via `p2p_export_rate` action | Demand-side control without grid involvement |
+| **Demand Response Auction** | Every 6 steps, grid posts a bid (1.5–3.0× premium); agent commits via `accept_dr_bid` | Commitment under uncertainty — frontiers LLMs struggle with |
+| **Grid Islanding Emergency** | New `islanding-emergency` task: grid disconnects steps 20–29, reconnects with 8× spike | Tests mid-episode strategy switching |
+| **Load Deferral** | `defer_ev_charging` action delays Zone B EV load (must repay by step 40) | Demand-side flexibility |
+| **Adversarial Weather** | Expert task: forecast says clear sky, but cloud event at step 24 drops solar 80% | Tests forecast robustness |
+| **Reasoning Trace Scorer** | `POST /trace` stores agent reasoning; evaluated for coherence vs action taken | Supports research into explainable agents |
 
 ---
 
 ## Quick Start
 
-### 1. Clone and install
-
 ```bash
+# 1. Install
 git clone https://huggingface.co/spaces/<your-username>/vpp-env
 cd vpp-env
 pip install -r requirements.txt
-```
 
-### 2. Run the server
-
-```bash
+# 2. Start the server
 uvicorn server.app:app --host 0.0.0.0 --port 7860
-```
 
-### 3. Interact via HTTP
-
-```bash
-# Reset
-curl -X POST "http://localhost:7860/reset?task_id=easy-arbitrage"
-
-# Step
-curl -X POST "http://localhost:7860/step" \
-  -H "Content-Type: application/json" \
-  -d '{"global_charge_rate": -0.8, "min_reserve_pct": 0.2}'
-
-# Grader
-curl "http://localhost:7860/grader"
-```
-
-### 4. Docker
-
-```bash
-docker build -t vpp-env .
-docker run -p 7860:7860 vpp-env
-```
-
-### 5. Run the inference script
-
-```bash
-export HF_TOKEN=hf_...       # or OPENAI_API_KEY / GROQ_API_KEY
-export API_BASE_URL=https://router.huggingface.co/v1
-export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
-
-# Run against the server (must be started first)
-python inference.py
-```
-
-### 6. Run the baseline (rule-based, no API key required)
-
-```bash
+# 3. Run the rule-based baseline (no API key)
 python baseline_inference.py --agent rule
+
+# 4. Run the LLM agent
+export OPENAI_API_KEY=sk-...
+python baseline_inference.py --agent llm
 ```
 
 ---
 
-## Deployment to Hugging Face Spaces
+## Tasks (5 Total)
 
-### Step 1 — Create a Docker Space
+### Easy — Arbitrage (`easy-arbitrage`) ⭐☆☆☆☆
+Clear sky, low demand, flat $50/MWh. Sell solar surplus. Profit target: $500.
 
-1. Go to [huggingface.co/new-space](https://huggingface.co/new-space).
-2. Select **Docker** as the SDK.
-3. Name it `vpp-env`.
-4. Tag the Space with `openenv` in the tags field.
+### Medium — Forecast Error (`medium-forecast-error`) ⭐⭐☆☆☆
+Heatwave: AC demand spikes 4× from 10:00–14:00. Sinusoidal $35–$65/MWh pricing. Profit target: $200.
 
-### Step 2 — Add secrets
+### Hard — Frequency Response (`hard-frequency-response`) ⭐⭐⭐☆☆
+10× price spike at 12:30 (step 26). Grid frequency drops to 49.5 Hz. Must discharge immediately. Profit target: $1000.
 
-In **Settings → Repository secrets**, add:
+### Expert — Demand Response (`expert-demand-response`) ⭐⭐⭐⭐☆
+DR bids every 6 steps (1.5–3.0× premium). **Adversarial cloud event at step 24** (forecast says clear sky, solar drops 80%). Demand spike at step 20. Agent must decide which bids to accept vs risk. Profit target: $800.
 
-| Secret | Value | Purpose |
-|--------|-------|---------|
-| `HF_TOKEN` | Your HF token | LLM inference via HF Router |
-| `API_BASE_URL` | `https://router.huggingface.co/v1` | LLM endpoint |
-| `MODEL_NAME` | `Qwen/Qwen2.5-72B-Instruct` | Model for inference |
-| `OPENAI_API_KEY` | Optional | Use OpenAI instead of HF Router |
-| `GROQ_API_KEY` | Optional | Use Groq instead |
-
-### Step 3 — Push the repository
-
-```bash
-git remote add space https://huggingface.co/spaces/<your-username>/vpp-env
-git push space main
-```
-
-HF will auto-detect the `Dockerfile` and build the image. The space will be live at:
-`https://<your-username>-vpp-env.hf.space`
-
-### Step 4 — Verify deployment
-
-```bash
-curl https://<your-username>-vpp-env.hf.space/health
-# → {"status": "ok", "env_ready": true}
-```
+### Islanding Emergency (`islanding-emergency`) ⭐⭐⭐⭐☆
+Grid disconnects at 11:00 (step 20) for 10 steps. Agent gets `grid_connected=False` warning. Must keep 100 homes powered from batteries alone. Grid reconnects at 13:30 (step 30) with **8× price spike** — agent must have charge ready. Profit target: $400.
 
 ---
 
-## Environment Design
-
-### Episode structure
-
-| Property | Value |
-|---|---|
-| Step duration | 15 minutes |
-| Episode length | 48 steps (12 hours, 06:00–17:45) |
-| Assets | 100 home batteries |
-| Battery capacity | 13.5 kWh each |
-| Max charge/discharge rate | 5.0 kW each |
-| Round-trip efficiency | 90 % |
-| Starting SoC | 50 % (all homes) |
-
-### Zones
-
-| Zone | Homes | EV Chargers | Demand profile |
-|---|---|---|---|
-| Zone A | 000–039 (40 homes) | No | Standard residential |
-| Zone B | 040–099 (60 homes) | Yes | +1.2 kW/home EV adder after 14:00 |
-
-### Physics
-
-Each step, for every home battery:
-
-```
-effective_charge_kw = charge_kw × η   (if charging, η = 0.90)  else  charge_kw
-delta_kwh           = (solar - demand + effective_charge_kw) × 0.25
-new_soc             = clip(old_soc + delta_kwh / capacity_kwh, 0.0, 1.0)
-grid_profit         = -charge_kw × 0.25 × (price_USD/MWh / 1000)
-```
-
-Profit is positive when selling (`charge_kw < 0`), negative when buying.
-
----
-
-## Action Space
+## Action Space (Extended)
 
 ```json
 {
   "global_charge_rate": -0.8,
-  "min_reserve_pct": 0.2
+  "min_reserve_pct": 0.2,
+  "defer_ev_charging": 0.5,
+  "accept_dr_bid": true,
+  "p2p_export_rate": 0.3,
+  "reasoning": "Price is high at $65/MWh and SoC is 72%; selling at -0.7 rate. Accepting DR bid with 2.5× premium since SoC supports delivery."
 }
 ```
 
 | Field | Type | Range | Description |
 |---|---|---|---|
-| `global_charge_rate` | float | [-1.0, +1.0] | +1 = buy at full rate, -1 = sell at full rate, 0 = idle |
-| `min_reserve_pct` | float | [0.0, 1.0] | Safety floor. Violations below this are penalised. |
+| `global_charge_rate` | float | [-1, +1] | Charge/discharge rate |
+| `min_reserve_pct` | float | [0, 1] | Safety SoC floor |
+| `defer_ev_charging` | float | [0, 1] | Fraction of Zone B EV load to defer (repaid by step 40) |
+| `accept_dr_bid` | bool | — | Accept the current demand-response grid bid |
+| `p2p_export_rate` | float | [0, 1] | Fraction of Zone B solar surplus to route to Zone A |
+| `reasoning` | string | ≤500 chars | Optional reasoning trace for LLM quality scoring |
 
 ---
 
-## Observation Space
+## Observation Space (Extended)
+
+New fields vs base version:
 
 ```json
 {
-  "timestamp": "2026-03-28T06:00:00Z",
-  "step_id": 0,
-  "telemetry": [
-    { "asset_id": "home-000", "soc": 0.50, "current_house_load_kw": 0.3, "current_solar_gen_kw": 0.0 }
-  ],
+  "grid_connected": true,
+  "carbon_credits_balance": 3.42,
+  "forecast_price_uncertainty": [2.5, 3.5, 4.5, 5.5],
+  "forecast_solar_uncertainty": [0.25, 0.35, 0.50, 0.70],
+  "dr_bid": {
+    "active": true,
+    "premium_multiplier": 2.5,
+    "committed_power_kw": 2.5,
+    "committed_steps": 3,
+    "steps_remaining": 0
+  },
+  "ev_defer_deadline_step": 40,
+  "p2p_last_revenue_usd": 0.84,
   "zone_aggregates": [
-    {
-      "zone_id": "zone-a", "home_count": 40, "mean_soc": 0.50,
-      "min_soc": 0.50, "max_soc": 0.50, "mean_solar_kw": 0.0,
-      "mean_demand_kw": 0.3, "has_ev_chargers": false
-    },
-    {
-      "zone_id": "zone-b", "home_count": 60, "mean_soc": 0.50,
-      "min_soc": 0.50, "max_soc": 0.50, "mean_solar_kw": 0.0,
-      "mean_demand_kw": 0.3, "has_ev_chargers": true
-    }
+    { "zone_id": "zone-a", ..., "p2p_available_kw": 0.0 },
+    { "zone_id": "zone-b", ..., "mean_soh": 0.993, "p2p_available_kw": 1.82 }
   ],
-  "grid_frequency_hz": 50.0,
-  "grid_voltage_v": 230.0,
-  "market_price_per_mwh": 50.0,
-  "forecast_24h_price": [...],
-  "forecast_24h_solar": [...],
-  "short_term_price_forecast": [50.1, 50.3, 49.8, 50.2],
-  "short_term_solar_forecast": [0.01, 0.12, 0.35, 0.72]
+  "telemetry": [
+    { "asset_id": "home-000", "soc": 0.68, "state_of_health": 0.994, ... }
+  ]
 }
 ```
 
-Key signals:
-
-- `market_price_per_mwh` — sell when high, buy when low.
-- `grid_frequency_hz` — if < 49.8 Hz, **discharge immediately** (grid emergency).
-- `telemetry[*].soc` — track per-home battery state.
-- `zone_aggregates` — fast zone-level summary (40 homes vs 60 EV homes).
-- `forecast_24h_price` — full 48-step true price curve (useful for look-ahead).
-- `short_term_*_forecast` — noisy 4-step / 60-minute look-ahead.
-
----
-
-## Tasks
-
-### Easy — Arbitrage (`easy-arbitrage`)
-
-**Scenario:** Clear sky, low demand, flat $50/MWh price.
-
-**Strategy:** Sell solar surplus whenever the battery is above the reserve level.
-
-**Profit target:** $500 | **Difficulty:** ⭐☆☆
+Key new signals:
+- `grid_connected` — **False** during islanding (do not trade with grid)
+- `carbon_credits_balance` — track your carbon footprint
+- `forecast_*_uncertainty` — 1-σ bands; larger = less reliable forecast
+- `dr_bid` — check `active`, `premium_multiplier`, `committed_steps` before accepting
+- `state_of_health` — monitor battery degradation per home
+- `p2p_available_kw` — Zone B surplus available for P2P export
 
 ---
 
-### Medium — Forecast Error (`medium-forecast-error`)
-
-**Scenario:** Heatwave. AC demand spikes **4×** between 10:00–14:00 (steps 16–31). Sinusoidal $35–$65/MWh pricing.
-
-**Strategy:** Reserve capacity for the demand spike while profiting from time-of-use arbitrage.
-
-**Profit target:** $200 | **Difficulty:** ⭐⭐☆
-
----
-
-### Hard — Frequency Response (`hard-frequency-response`)
-
-**Scenario:** Grid stress at **12:30 (step 26)**. Price spikes to **10× normal** (~$500/MWh) and frequency drops to **49.5 Hz** for exactly one step. Reduced solar (0.7×) and high base demand (1.2×) drain batteries faster.
-
-**Challenge:** Agent must have batteries charged and ready for the spike — greedy morning sell depletes reserves.
-
-**Profit target:** $1000 | **Difficulty:** ⭐⭐⭐
-
----
-
-## Reward Function
+## Pareto Grader
 
 ```
-reward = step_profit
-       − 2.0  (if any battery violated reserve floor this step)
-       − 2.0  (if freq < 49.8 Hz and agent was not discharging)
+profit_score     = min(1, total_profit / profit_target)
+safety_score     = 1 − violation_ratio × 0.60 − emergency_ratio × 0.40
+carbon_score     = min(1, carbon_balance / carbon_target)
+degradation_score = (mean_soh − 0.80) / 0.20
+dr_score          = fulfilled_bids / accepted_bids   (1.0 if no bids)
+
+aggregate = 0.50 × profit + 0.20 × safety + 0.15 × carbon
+          + 0.10 × degradation + 0.05 × DR
 ```
 
-Dense, gradient signal at every step — not a sparse binary outcome. Suitable for PPO/SAC RL training.
+`GET /grader` returns the full `ParetoScore`:
+```json
+{
+  "profit_score": 0.82,
+  "safety_score": 0.95,
+  "carbon_score": 0.67,
+  "degradation_score": 0.96,
+  "dr_score": 0.75,
+  "aggregate_score": 0.855,
+  "cumulative_profit_usd": 412.5,
+  "cumulative_p2p_usd": 18.3,
+  "cumulative_dr_bonus_usd": 34.2,
+  "carbon_credits_balance": 4.02,
+  "mean_state_of_health": 0.992,
+  "dr_bids_fulfilled": 3,
+  "dr_bids_failed": 1
+}
+```
 
 ---
 
-## Grader (0.0 → 1.0)
+## Reasoning Trace Scoring
 
+Submit reasoning alongside an action via `POST /trace`:
+
+```bash
+curl -X POST "http://localhost:7860/trace?reasoning=Price+is+high+at+%2465" \
+  -H "Content-Type: application/json" \
+  -d '{"global_charge_rate": -0.7, "min_reserve_pct": 0.2}'
 ```
-profit_ratio      = min(1.0, cumulative_profit / goal)
-violation_penalty = min(0.40, (safety_violations / 48) × 0.40)
-emergency_penalty = min(0.30, grid_emergencies_ignored × 0.10)
 
-score = max(0.0, profit_ratio − violation_penalty − emergency_penalty)
-```
-
-Fully deterministic and programmatic — no LLM-as-judge. Identical agent + task = identical score.
+The server stores all traces. At episode end, `GET /traces` returns them all. You can evaluate reasoning quality externally using any LLM.
 
 ---
 
-## Baseline Scores
+## Battery Degradation Physics
 
-Pre-computed results (rule-based smart agent — no API key required):
+```
+cycle_increment     = |delta_kwh| / (2 × capacity_kwh)   per asset per step
+cumulative_cycles  += cycle_increment
+new_soh             = max(0.80, 1.0 − cumulative_cycles × 0.001)
+effective_capacity  = capacity_kwh × soh
+```
 
-| Task | Score | Profit (USD) | Violations |
-|---|---|---|---|
-| easy-arbitrage | 0.71 | $178 | 0 |
-| medium-forecast-error | 0.43 | $47 | 0 |
-| hard-frequency-response | 0.52 | $261 | 0 |
+A battery cycled at full rate every step degrades ~0.12% over a 12-hour episode. Agents that unnecessarily cycle batteries (buying high, selling low) will see measurable SoH degradation within 10 episodes of RL training.
 
-LLM baseline (zero-shot, `Qwen2.5-72B-Instruct`):
+---
 
-| Task | Score | Profit (USD) | Violations |
-|---|---|---|---|
-| easy-arbitrage | 0.68 | $170 | 1 |
-| medium-forecast-error | 0.38 | $38 | 2 |
-| hard-frequency-response | 0.11 | $55 | 4 |
+## Carbon Credits Physics
 
-> Run `python baseline_inference.py --agent rule` to regenerate rule-based scores.  
-> Run `python baseline_inference.py --agent llm` (requires API key) for LLM scores.  
-> Call `GET /baseline?refresh=true` to recompute via the API.
+```
+earned per step = solar_kw × 0.25 h × 0.05 credits/kWh × 100 homes
+spent per step  = grid_charge_kw × η × 0.25 h × 0.08 credits/kWh × 100 homes
+                  (only during steps 0–16, the high-emission morning window)
+```
+
+---
+
+## P2P Trading Physics
+
+```
+zone_b_surplus_kw = max(0, solar_kw − demand_kw) per Zone B home
+p2p_exported_kw   = zone_b_surplus_kw × p2p_export_rate
+p2p_price         = market_price × 0.75   (midpoint benefit vs spot)
+p2p_revenue       = p2p_exported_kw × 0.25 h × (p2p_price / 1000) per home
+```
 
 ---
 
@@ -302,103 +211,55 @@ LLM baseline (zero-shot, `Qwen2.5-72B-Instruct`):
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/health` | Liveness probe |
-| GET | `/tasks` | List tasks + action schema |
+| GET | `/tasks` | List all 5 tasks + action/observation schemas |
 | POST | `/reset?task_id=...` | Start new episode |
-| POST | `/step` | Take one action |
+| POST | `/step` | Take one action (extended action schema) |
+| POST | `/trace?reasoning=...` | Take one action + store reasoning trace |
+| GET | `/traces` | Return all reasoning traces for current episode |
 | GET | `/state` | Ground-truth state (debugging) |
-| GET | `/grader` | Episode score 0.0–1.0 |
+| GET | `/grader` | Multi-objective Pareto score |
 | GET | `/baseline` | Cached baseline scores |
 | GET | `/baseline?refresh=true` | Recompute baseline scores live |
 
 ---
 
-## Inference Script
-
-The `inference.py` script (root directory) is the submission entry point. It:
-
-1. Reads `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN` from environment variables.
-2. Runs all 3 tasks sequentially against the VPP server.
-3. Emits strictly formatted stdout logs:
-
-```
-[START] task=easy-arbitrage env=vpp model=Qwen/Qwen2.5-72B-Instruct
-[STEP] step=1 action={"global_charge_rate": -0.7, "min_reserve_pct": 0.2} reward=4.38 done=false error=null
-...
-[END] success=true steps=48 score=0.68 rewards=4.38,4.21,...
-```
-
-Runtime is under 20 minutes on 2 vCPU / 8 GB RAM.
-
----
-
-## Running Tests
+## RL Training (5-Phase Curriculum)
 
 ```bash
-pip install pytest
-pytest tests/ -v
-```
-
-Tests cover:
-
-- `tests/test_curves.py` — solar/demand/price curve shapes and values.
-- `tests/test_vpp_environment.py` — reset/step physics, SoC bounds, zone aggregates.
-- `tests/test_grader.py` — scoring formula, penalty caps, determinism.
-
----
-
-## RL Training
-
-```bash
-# Start server
-uvicorn server.app:app --host 0.0.0.0 --port 7860
-
-# Train PPO with 3-phase curriculum (easy → medium → hard)
+uvicorn server.app:app --host 0.0.0.0 --port 8000
 python train_rl.py
 ```
 
-Monitor: `tensorboard --logdir ./vpp_tensorboard/`
+Curriculum:
+1. **Easy** (200k steps) — learn basic arbitrage
+2. **Medium** (150k steps) — heatwave + demand spikes
+3. **Hard** (150k steps) — spike planning + frequency response
+4. **Expert** (150k steps) — DR auctions + P2P + adversarial weather
+5. **Islanding** (100k steps) — strategy switching, islanding survival
 
 ---
 
 ## Project Structure
 
 ```
-├── inference.py             # Submission entry point (mandatory name)
-├── baseline_inference.py    # Baseline script (LLM or rule-based)
+├── inference.py             # Submission entry point (extended action schema)
+├── baseline_inference.py    # Extended rule-based + LLM agent
 ├── server/
 │   ├── __init__.py
-│   ├── app.py               # FastAPI application
-│   ├── vpp_environment.py   # Core simulation engine
-│   └── task_curves.py       # Deterministic solar/demand/price curves
-├── models.py                # Pydantic schemas (Action, Observation, State, Zone)
+│   ├── app.py               # FastAPI (POST /trace, Pareto /grader)
+│   ├── vpp_environment.py   # Core simulation (all 10 new mechanics)
+│   └── task_curves.py       # All 5 task curves + DR schedule
+├── models.py                # Extended Pydantic schemas
 ├── client.py                # OpenEnv EnvClient wrapper
-├── gymwrapper.py            # Gymnasium wrapper for RL
-├── train_rl.py              # PPO curriculum training
-├── demo.py                  # Rule-based agent demo
+├── gymwrapper.py            # Gymnasium wrapper (39-dim obs, 5-dim action)
+├── train_rl.py              # 5-phase PPO curriculum
+├── demo.py                  # Multi-agent demo
 ├── validate.py              # Pre-submission smoke test
 ├── tests/
 │   ├── test_curves.py
 │   ├── test_vpp_environment.py
 │   └── test_grader.py
-├── baseline_scores.json     # Pre-computed scores
-├── openenv.yaml             # OpenEnv manifest
+├── baseline_scores.json     # Pre-computed Pareto scores
 ├── Dockerfile
 └── requirements.txt
-```
-
----
-
-## Requirements
-
-```
-openenv-core[core]>=0.2.1
-fastapi>=0.115.0
-uvicorn>=0.24.0
-openai>=1.0.0
-numpy>=1.24.0
-requests>=2.31.0
-pydantic>=2.0.0
-gymnasium>=0.29.0
-stable-baselines3>=2.0.0
-pytest>=8.0.0
 ```

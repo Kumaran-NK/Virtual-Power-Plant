@@ -6,7 +6,11 @@
 
 """Vpp Environment package."""
 
-from .client import VppEnv
-from .models import VppAction, VppObservation
+try:
+    from .client import VppEnv
+    from .models import VppAction, VppObservation
+except ImportError:
+    from client import VppEnv
+    from models import VppAction, VppObservation
 
 __all__ = ["VppAction", "VppObservation", "VppEnv"]

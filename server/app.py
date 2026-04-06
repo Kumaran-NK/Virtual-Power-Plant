@@ -1,36 +1,31 @@
 # server/app.py
 """
-FastAPI application exposing the VPP environment via the OpenEnv HTTP interface.
+FastAPI application — VPP OpenEnv HTTP interface, Extended Edition.
 
-Endpoints
----------
-POST /reset          Start a new episode
-POST /step           Take one action
-GET  /state          Return current ground-truth state
-GET  /tasks          List available tasks + action schema
-GET  /grader         Return episode score (0.0–1.0)
-GET  /baseline       Return (and optionally recompute) baseline LLM scores
-GET  /health         Liveness probe (used by Docker HEALTHCHECK)
+New endpoints vs base:
+  POST /trace          Submit reasoning trace (LLM-scored quality)
+  GET  /grader         Now returns ParetoScore (multi-objective)
+  GET  /tasks          Now lists all 5 tasks
 """
 
 import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from models import VppAction, VppObservation, VppState
+from models import VppAction, VppObservation, VppState, ParetoScore
 from server.vpp_environment import VppEnvironment
+from server.task_curves import ALL_TASK_IDS, TASK_METADATA
 
 
 # ---------------------------------------------------------------------------
-# Lifespan: create a warm environment instance on startup
+# Lifespan
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
@@ -41,21 +36,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="VPP Orchestrator — OpenEnv",
+    title="VPP Orchestrator — OpenEnv Extended",
     description=(
-        "Virtual Power Plant environment: manage 100 home batteries "
-        "to maximise grid profit while maintaining safety constraints."
+        "Virtual Power Plant: manage 100 home batteries to maximise grid profit "
+        "while balancing safety, carbon credits, battery health, P2P trading, "
+        "demand-response auctions, and grid islanding emergencies."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 env: VppEnvironment | None = None
 
-# Baseline computation state
-_baseline_lock       = threading.Lock()
-_baseline_running    = False
-_baseline_result     = None      # cached last result
+_baseline_lock    = threading.Lock()
+_baseline_running = False
+_baseline_result  = None
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +59,7 @@ _baseline_result     = None      # cached last result
 
 def _require_env() -> VppEnvironment:
     if env is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Environment not initialised — call /reset first.",
-        )
+        raise HTTPException(status_code=400, detail="Environment not initialised — call /reset first.")
     return env
 
 
@@ -77,7 +69,6 @@ def _require_env() -> VppEnvironment:
 
 @app.get("/health")
 async def health():
-    """Docker HEALTHCHECK liveness probe."""
     return {"status": "ok", "env_ready": env is not None}
 
 
@@ -85,7 +76,7 @@ async def health():
 async def reset(
     task_id: str = Query(
         ...,
-        description="Task ID: easy-arbitrage | medium-forecast-error | hard-frequency-response",
+        description=" | ".join(ALL_TASK_IDS),
     )
 ):
     """Reset the environment and start a new episode. Returns the initial observation."""
@@ -93,15 +84,10 @@ async def reset(
     if env is None:
         env = VppEnvironment()
 
-    valid_tasks = {
-        "easy-arbitrage",
-        "medium-forecast-error",
-        "hard-frequency-response",
-    }
-    if task_id not in valid_tasks:
+    if task_id not in ALL_TASK_IDS:
         raise HTTPException(
             status_code=422,
-            detail=f"Unknown task_id '{task_id}'. Valid: {sorted(valid_tasks)}",
+            detail=f"Unknown task_id '{task_id}'. Valid: {sorted(ALL_TASK_IDS)}",
         )
 
     obs = env.reset(task_id)
@@ -115,10 +101,7 @@ async def step(action: VppAction):
     if e.state is None:
         raise HTTPException(status_code=400, detail="Call /reset before /step.")
     if e.state.done:
-        raise HTTPException(
-            status_code=400,
-            detail="Episode finished — call /reset to start a new one.",
-        )
+        raise HTTPException(status_code=400, detail="Episode finished — call /reset to start a new one.")
 
     obs, reward, done, info = e.step(action)
     return {"observation": obs, "reward": reward, "done": done, "info": info}
@@ -133,111 +116,127 @@ async def get_state():
 
 @app.get("/tasks")
 async def get_tasks():
-    """List all available tasks and the action schema."""
+    """List all 5 available tasks and the action schema."""
+    tasks_out = []
+    for tid, meta in TASK_METADATA.items():
+        tasks_out.append({
+            "id":                   tid,
+            "description":         meta["description"],
+            "difficulty":          meta["difficulty"],
+            "profit_target_usd":   meta["profit_target_usd"],
+            "carbon_target_credits": meta["carbon_target_credits"],
+            "has_islanding":       meta["has_islanding"],
+            "has_dr_auction":      meta["has_dr_auction"],
+            "weather":             meta["weather"],
+        })
     return {
-        "tasks": [
-            {
-                "id": "easy-arbitrage",
-                "description": (
-                    "High solar production, low household demand, flat $50/MWh price. "
-                    "Strategy: sell solar surplus. Profit target: $500."
-                ),
-                "difficulty": "easy",
-                "profit_target_usd": 500.0,
-            },
-            {
-                "id": "medium-forecast-error",
-                "description": (
-                    "Heatwave event: AC demand spikes 4× from 10:00–14:00. "
-                    "Sinusoidal pricing rewards time-of-use arbitrage. "
-                    "Agent must manage forecast uncertainty. Profit target: $200."
-                ),
-                "difficulty": "medium",
-                "profit_target_usd": 200.0,
-            },
-            {
-                "id": "hard-frequency-response",
-                "description": (
-                    "Grid stress: a single-step 10× price spike at 12:30 (step 26). "
-                    "Grid frequency drops to 49.5 Hz — agent must discharge immediately. "
-                    "If batteries are depleted before the spike, revenue is lost. "
-                    "Requires look-ahead planning and reserve management. Profit target: $1000."
-                ),
-                "difficulty": "hard",
-                "profit_target_usd": 1000.0,
-            },
-        ],
-        "action_schema": VppAction.model_json_schema(),
+        "tasks":              tasks_out,
+        "action_schema":      VppAction.model_json_schema(),
         "observation_schema": VppObservation.model_json_schema(),
+        "pareto_score_schema": ParetoScore.model_json_schema(),
     }
 
 
 @app.get("/grader")
 async def get_grader_score():
     """
-    Return the deterministic grader score for the completed (or in-progress) episode.
+    Return the deterministic multi-objective Pareto score for the current episode.
 
-    Score is in [0.0, 1.0]:
-      1.0 = profit target met, zero safety violations
-      0.0 = no profit or extreme violation count
+    Returns a ParetoScore with:
+      profit_score, safety_score, carbon_score, degradation_score, dr_score
+      + weighted aggregate_score in [0.0, 1.0]
+    Weights: 0.50 profit | 0.20 safety | 0.15 carbon | 0.10 degradation | 0.05 DR
     """
     if env is None or env.state is None:
-        return {"score": 0.0, "detail": "No episode in progress."}
+        return {
+            "aggregate_score": 0.0,
+            "score": 0.0, 
+            "profit_score": 0.0,
+            "safety_score": 1.0,
+            "carbon_score": 0.0,
+            "degradation_score": 1.0,
+            "dr_score": 0.0,
+            "detail": "No episode in progress.",
+        }
 
-    score = env.get_current_task_score()
-    state = env.state
+    pareto = env.get_pareto_score()
+    result = pareto.dict()
+    result["score"] = pareto.aggregate_score
+    return result
+
+
+# ---------------------------------------------------------------------------
+# POST /trace — reasoning quality scoring
+# ---------------------------------------------------------------------------
+
+@app.post("/trace")
+async def submit_trace(reasoning: str, action: VppAction):
+    """
+    Submit a reasoning trace alongside an action for LLM quality scoring.
+
+    The trace is stored server-side and evaluated at episode end (GET /grader
+    returns reasoning_quality_score when traces are present).
+
+    The scoring LLM checks:
+      - Does the reasoning correctly identify the relevant market signals?
+      - Is the chosen action consistent with the stated reasoning?
+      - Is the reserve management justified?
+    """
+    e = _require_env()
+    if e.state is None:
+        raise HTTPException(status_code=400, detail="Call /reset before /trace.")
+
+    # Inject reasoning into action and step
+    action.reasoning = reasoning
+    obs, reward, done, info = e.step(action)
+
+    traces = e.get_reasoning_traces()
     return {
-        "score":                       score,
-        "cumulative_profit_usd":       state.cumulative_profit_usd,
-        "safety_violations":           state.safety_violations_count,
-        "grid_emergencies_ignored":    state.grid_emergencies_ignored,
-        "steps_completed":             state.current_step,
-        "done":                        state.done,
+        "observation": obs,
+        "reward":      reward,
+        "done":        done,
+        "info":        info,
+        "trace_count": len(traces),
+        "reasoning_stored": True,
     }
 
 
+@app.get("/traces")
+async def get_traces():
+    """Return all stored reasoning traces for the current episode."""
+    e = _require_env()
+    return {"traces": e.get_reasoning_traces()}
+
+
 # ---------------------------------------------------------------------------
-# /baseline — dynamic or cached baseline scores
+# /baseline
 # ---------------------------------------------------------------------------
 
 def _run_baseline_subprocess() -> dict:
-    """
-    Execute baseline_inference.py in a subprocess and return parsed scores.
-
-    Passes --json-only so the script emits only a JSON blob to stdout.
-    Falls back to cached file if the subprocess fails.
-    """
     global _baseline_result, _baseline_running
 
     baseline_script = os.path.join(os.path.dirname(__file__), "..", "baseline_inference.py")
     baseline_script = os.path.abspath(baseline_script)
-
     env_vars = {**os.environ, "VPP_SERVER_URL": "http://localhost:7860"}
 
     try:
         result = subprocess.run(
             [sys.executable, baseline_script, "--json-only"],
-            capture_output=True,
-            text=True,
-            timeout=180,          # 3-minute hard cap
-            env=env_vars,
+            capture_output=True, text=True, timeout=300, env=env_vars,
         )
         if result.returncode == 0 and result.stdout.strip():
             scores = json.loads(result.stdout.strip())
-            # Persist for future requests
             out_path = os.path.join(os.path.dirname(__file__), "..", "baseline_scores.json")
             with open(out_path, "w") as f:
                 json.dump(scores, f, indent=2)
             _baseline_result = scores
             return scores
         else:
-            stderr_snippet = (result.stderr or "")[:500]
-            return {"error": "Baseline script returned non-zero", "details": stderr_snippet}
-
+            return {"error": "Baseline script returned non-zero", "details": (result.stderr or "")[:500]}
     except subprocess.TimeoutExpired:
-        return {"error": "Baseline computation timed out (>180 s). Try again."}
+        return {"error": "Baseline computation timed out (>300 s)."}
     except json.JSONDecodeError as e:
-        return {"error": f"Could not parse baseline output as JSON: {e}"}
+        return {"error": f"Could not parse baseline output: {e}"}
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -247,20 +246,10 @@ def _run_baseline_subprocess() -> dict:
 
 @app.get("/baseline")
 async def get_baseline(
-    refresh: bool = Query(
-        False,
-        description="Set to true to re-run the baseline inference script synchronously.",
-    )
+    refresh: bool = Query(False, description="Set to true to recompute live."),
 ):
-    """
-    Return pre-computed baseline scores.
-
-    By default returns the cached baseline_scores.json.
-    Pass ?refresh=true to recompute live (takes ~2 minutes, requires API key).
-    """
     global _baseline_running, _baseline_result
 
-    # If live refresh requested, run the subprocess synchronously
     if refresh:
         with _baseline_lock:
             if _baseline_running:
@@ -269,35 +258,41 @@ async def get_baseline(
                     content={"status": "Baseline already running. Check back shortly."},
                 )
             _baseline_running = True
+        return _run_baseline_subprocess()
 
-        scores = _run_baseline_subprocess()
-        return scores
-
-    # Try in-memory cache first
     if _baseline_result is not None:
         return _baseline_result
 
-    # Fall back to file
-    baseline_path = os.path.join(
-        os.path.dirname(__file__), "..", "baseline_scores.json"
-    )
+    baseline_path = os.path.join(os.path.dirname(__file__), "..", "baseline_scores.json")
     try:
         with open(baseline_path, "r") as f:
             scores = json.load(f)
         _baseline_result = scores
         return scores
     except FileNotFoundError:
-        return {
-            "easy-arbitrage": {
-                "score": 0.0,
-                "note": "Run baseline_inference.py or call /baseline?refresh=true",
-            },
-            "medium-forecast-error": {
-                "score": 0.0,
-                "note": "Run baseline_inference.py or call /baseline?refresh=true",
-            },
-            "hard-frequency-response": {
-                "score": 0.0,
-                "note": "Run baseline_inference.py or call /baseline?refresh=true",
-            },
-        }
+        empty = {tid: {"aggregate_score": 0.0, "note": "Run baseline_inference.py"} for tid in ALL_TASK_IDS}
+        return empty
+
+
+# ---------------------------------------------------------------------------
+# Entry points for openenv validate and direct execution
+# ---------------------------------------------------------------------------
+
+def main():
+    """Zero-argument main for openenv validate."""
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+def run_server(host: str = "0.0.0.0", port: int = 8000):
+    """Entry point for running the server directly with custom host/port."""
+    import uvicorn
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+    run_server(port=args.port)
