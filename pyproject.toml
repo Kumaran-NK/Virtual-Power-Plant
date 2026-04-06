@@ -34,10 +34,20 @@ dev = [
 
 [project.scripts]
 # Server entry point - enables running via: uv run --project . server
-# or: python -m vpp.server.app
-server = "vpp.server.app:main"
+# or: python -m server.app
+server = "server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["vpp", "vpp.server"]
-package-dir = { "vpp" = ".", "vpp.server" = "server" }
+packages = ["server"]
+package-dir = { "" = "." }
+py-modules = [
+    "models",
+    "client",
+    "inference",
+    "baseline_inference",
+    "validate",
+    "gymwrapper",
+    "train_rl",
+    "demo",
+]

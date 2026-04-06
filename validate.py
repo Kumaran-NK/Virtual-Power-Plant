@@ -17,10 +17,10 @@ Verifies every requirement from the hackathon pre-submission checklist:
 
 Usage:
   # Start the server first:
-  uvicorn server.app:app --host 0.0.0.0 --port 8000
+    uvicorn server.app:app --host 0.0.0.0 --port 7860
 
   # Then run:
-  python validate.py [--url http://localhost:8000]
+    python validate.py [--url http://localhost:7860]
 """
 
 import argparse
@@ -113,6 +113,12 @@ def check_tasks(session, base):
         ok("action_schema present in /tasks response")
     else:
         fail("action_schema missing from /tasks")
+
+    reward_schema = data.get("reward_schema")
+    if reward_schema:
+        ok("reward_schema present in /tasks response")
+    else:
+        fail("reward_schema missing from /tasks")
 
     return ids
 
@@ -314,7 +320,7 @@ def check_determinism(session, base):
 
 def main():
     parser = argparse.ArgumentParser(description="VPP OpenEnv pre-submission validator")
-    parser.add_argument("--url", default="http://localhost:8000", help="Base URL of the running server")
+    parser.add_argument("--url", default="http://localhost:7860", help="Base URL of the running server")
     args = parser.parse_args()
 
     base = args.url.rstrip("/")
@@ -337,7 +343,7 @@ def main():
         print(".", end="", flush=True)
     else:
         print(f"\n{RED}ERROR:{RESET} Server at {base} is not responding after 20 s.")
-        print("Start it with:  uvicorn server.app:app --host 0.0.0.0 --port 8000")
+        print("Start it with:  uvicorn server.app:app --host 0.0.0.0 --port 7860")
         sys.exit(1)
 
     # Run all checks

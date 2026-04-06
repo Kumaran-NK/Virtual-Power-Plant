@@ -2,10 +2,14 @@
 """
 FastAPI application — VPP OpenEnv HTTP interface, Extended Edition.
 
-New endpoints vs base:
+Uses OpenEnv core create_app() for lifecycle and session management.
+
+Custom OpenEnv-compatible endpoints:
   POST /trace          Submit reasoning trace (LLM-scored quality)
-  GET  /grader         Now returns ParetoScore (multi-objective)
-  GET  /tasks          Now lists all 5 tasks
+  GET  /grader         Returns ParetoScore (multi-objective)
+  GET  /tasks          Lists all 5 tasks + schemas
+  GET  /traces         Returns stored reasoning traces
+  GET  /baseline       Returns pre-computed baseline scores
 """
 
 import json
@@ -13,110 +17,66 @@ import os
 import subprocess
 import sys
 import threading
-from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from models import VppAction, VppObservation, VppState, ParetoScore
-from server.vpp_environment import VppEnvironment
+from openenv.core import create_app as create_openenv_app
+
+from models import VppAction, VppObservation, VppState, ParetoScore, VppReward
+from server.vpp_environment import VppEnvironment, _current_instance
 from server.task_curves import ALL_TASK_IDS, TASK_METADATA
 
 
 # ---------------------------------------------------------------------------
-# Lifespan
+# Create OpenEnv app with lifecycle and session management
 # ---------------------------------------------------------------------------
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global env
-    env = VppEnvironment()
-    yield
-
-
-app = FastAPI(
-    title="VPP Orchestrator — OpenEnv Extended",
-    description=(
-        "Virtual Power Plant: manage 100 home batteries to maximise grid profit "
-        "while balancing safety, carbon credits, battery health, P2P trading, "
-        "demand-response auctions, and grid islanding emergencies."
-    ),
-    version="2.0.0",
-    lifespan=lifespan,
+app: FastAPI = create_openenv_app(
+    env=lambda: VppEnvironment(),  # Factory function for environment instances
+    action_cls=VppAction,
+    observation_cls=VppObservation,
+    env_name="vpp",
+    max_concurrent_envs=16,
 )
 
-env: VppEnvironment | None = None
-
+# Global state for baseline computation (not per-session)
 _baseline_lock    = threading.Lock()
 _baseline_running = False
 _baseline_result  = None
 
 
 # ---------------------------------------------------------------------------
-# Helper
+# Helper: access current environment instance
 # ---------------------------------------------------------------------------
 
-def _require_env() -> VppEnvironment:
-    if env is None:
+def get_current_env() -> VppEnvironment:
+    """
+    Retrieve the current environment instance.
+    Raises HTTPException if no environment is active.
+    """
+    global _current_instance
+    # Access the module-level _current_instance variable
+    from server.vpp_environment import _current_instance as env_inst
+    if env_inst is None or env_inst.state is None:
         raise HTTPException(status_code=400, detail="Environment not initialised — call /reset first.")
-    return env
+    return env_inst
 
 
 # ---------------------------------------------------------------------------
-# Endpoints
+# Custom Endpoints (OpenEnv-compatible extensions)
 # ---------------------------------------------------------------------------
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "env_ready": env is not None}
-
-
-@app.post("/reset")
-async def reset(
-    task_id: str = Query(
-        ...,
-        description=" | ".join(ALL_TASK_IDS),
-    )
-):
-    """Reset the environment and start a new episode. Returns the initial observation."""
-    global env
-    if env is None:
-        env = VppEnvironment()
-
-    if task_id not in ALL_TASK_IDS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown task_id '{task_id}'. Valid: {sorted(ALL_TASK_IDS)}",
-        )
-
-    obs = env.reset(task_id)
-    return obs
-
-
-@app.post("/step")
-async def step(action: VppAction):
-    """Take one action. Returns observation, reward, done flag, and diagnostic info."""
-    e = _require_env()
-    if e.state is None:
-        raise HTTPException(status_code=400, detail="Call /reset before /step.")
-    if e.state.done:
-        raise HTTPException(status_code=400, detail="Episode finished — call /reset to start a new one.")
-
-    obs, reward, done, info = e.step(action)
-    return {"observation": obs, "reward": reward, "done": done, "info": info}
-
-
-@app.get("/state")
-async def get_state():
-    """Return the current ground-truth state (hidden from agent in production)."""
-    e = _require_env()
-    return e.state
+# Note: create_app already provides /health, /reset, /step, /state, /tasks (basic)
+# These custom endpoints enhance or extend the core functionality.
 
 
 @app.get("/tasks")
-async def get_tasks():
-    """List all 5 available tasks and the action schema."""
+async def get_tasks_enhanced():
+    """
+    List all 5 available tasks with detailed metadata and schemas.
+    Extends the basic OpenEnv /tasks endpoint with additional fields.
+    """
     tasks_out = []
     for tid, meta in TASK_METADATA.items():
         tasks_out.append({
@@ -133,6 +93,7 @@ async def get_tasks():
         "tasks":              tasks_out,
         "action_schema":      VppAction.model_json_schema(),
         "observation_schema": VppObservation.model_json_schema(),
+        "reward_schema":      VppReward.model_json_schema(),
         "pareto_score_schema": ParetoScore.model_json_schema(),
     }
 
@@ -147,10 +108,17 @@ async def get_grader_score():
       + weighted aggregate_score in [0.0, 1.0]
     Weights: 0.50 profit | 0.20 safety | 0.15 carbon | 0.10 degradation | 0.05 DR
     """
-    if env is None or env.state is None:
+    try:
+        env = get_current_env()
+        pareto = env.get_pareto_score()
+        result = pareto.model_dump()
+        result["score"] = pareto.aggregate_score
+        return result
+    except HTTPException:
+        # No active episode
         return {
             "aggregate_score": 0.0,
-            "score": 0.0, 
+            "score": 0.0,
             "profit_score": 0.0,
             "safety_score": 1.0,
             "carbon_score": 0.0,
@@ -158,11 +126,6 @@ async def get_grader_score():
             "dr_score": 0.0,
             "detail": "No episode in progress.",
         }
-
-    pareto = env.get_pareto_score()
-    result = pareto.dict()
-    result["score"] = pareto.aggregate_score
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -182,15 +145,15 @@ async def submit_trace(reasoning: str, action: VppAction):
       - Is the chosen action consistent with the stated reasoning?
       - Is the reserve management justified?
     """
-    e = _require_env()
-    if e.state is None:
+    env = get_current_env()
+    if env.state is None:
         raise HTTPException(status_code=400, detail="Call /reset before /trace.")
 
     # Inject reasoning into action and step
     action.reasoning = reasoning
-    obs, reward, done, info = e.step(action)
+    obs, reward, done, info = env.step(action)
 
-    traces = e.get_reasoning_traces()
+    traces = env.get_reasoning_traces()
     return {
         "observation": obs,
         "reward":      reward,
@@ -204,15 +167,16 @@ async def submit_trace(reasoning: str, action: VppAction):
 @app.get("/traces")
 async def get_traces():
     """Return all stored reasoning traces for the current episode."""
-    e = _require_env()
-    return {"traces": e.get_reasoning_traces()}
+    env = get_current_env()
+    return {"traces": env.get_reasoning_traces()}
 
 
 # ---------------------------------------------------------------------------
-# /baseline
+# /baseline — pre-computed and live baseline scoring
 # ---------------------------------------------------------------------------
 
 def _run_baseline_subprocess() -> dict:
+    """Trigger baseline_inference.py as subprocess and store results."""
     global _baseline_result, _baseline_running
 
     baseline_script = os.path.join(os.path.dirname(__file__), "..", "baseline_inference.py")
@@ -248,6 +212,12 @@ def _run_baseline_subprocess() -> dict:
 async def get_baseline(
     refresh: bool = Query(False, description="Set to true to recompute live."),
 ):
+    """
+    Return pre-computed baseline scores or trigger live recomputation.
+
+    When refresh=true, asynchronously runs baseline_inference.py and returns results.
+    Otherwise, returns pre-stored baseline_scores.json if available.
+    """
     global _baseline_running, _baseline_result
 
     if refresh:
@@ -279,13 +249,18 @@ async def get_baseline(
 # ---------------------------------------------------------------------------
 
 def main():
-    """Zero-argument main for openenv validate."""
+    """
+    Zero-argument entry point for openenv validate.
+    Reads HOST and PORT from environment variables (defaults: 0.0.0.0, 7860).
+    """
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "7860"))
+    uvicorn.run(app, host=host, port=port)
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8000):
-    """Entry point for running the server directly with custom host/port."""
+def run_server(host: str = "0.0.0.0", port: int = 7860):
+    """Direct entry point for running the server with custom host/port."""
     import uvicorn
     uvicorn.run(app, host=host, port=port)
 
@@ -293,6 +268,7 @@ def run_server(host: str = "0.0.0.0", port: int = 8000):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--host", type=str, default=os.getenv("HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "7860")))
     args = parser.parse_args()
-    run_server(port=args.port)
+    run_server(host=args.host, port=args.port)

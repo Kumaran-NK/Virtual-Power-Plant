@@ -19,6 +19,14 @@ tasks:
     description: "Grid stress: 10× price spike + frequency emergency at step 26 (12:30). Profit target $500."
     difficulty: hard
 
+  - id: "expert-demand-response"
+    description: "DR auctions every 6 steps with premium multipliers and adversarial cloud disruption. Profit target $800."
+    difficulty: expert
+
+  - id: "islanding-emergency"
+    description: "Grid disconnect between steps 20-29. Preserve home power and exploit reconnection spike. Profit target $400."
+    difficulty: hard
+
 type: space
 runtime: fastapi
 app: server.app:app

@@ -11,14 +11,14 @@ Demonstrates the scoring gradient clearly:
   Smart Rules → best profit + low violations  → highest rule-based score
 
 Usage:
-  uvicorn server.app:app --host 0.0.0.0 --port 8000   # terminal 1
+    uvicorn server.app:app --host 0.0.0.0 --port 7860   # terminal 1
   python demo.py                                        # terminal 2
 """
 
 import os, sys
 import requests
 
-BASE         = os.getenv("VPP_SERVER_URL", "http://localhost:8000")
+BASE         = os.getenv("VPP_SERVER_URL", "http://localhost:7860")
 EPISODE_STEPS = 48    # 12-hour episodes
 
 
@@ -142,7 +142,7 @@ def main():
         assert session.get(f"{BASE}/health", timeout=5).status_code == 200
     except Exception:
         print(f"ERROR: Server not reachable at {BASE}")
-        print("Run:  uvicorn server.app:app --host 0.0.0.0 --port 8000")
+        print("Run:  uvicorn server.app:app --host 0.0.0.0 --port 7860")
         sys.exit(1)
 
     agents = [

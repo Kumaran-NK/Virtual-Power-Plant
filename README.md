@@ -40,6 +40,31 @@ export OPENAI_API_KEY=sk-...
 python baseline_inference.py --agent llm
 ```
 
+## Required Environment Variables
+
+The evaluator expects these variables to be configured in your runtime environment:
+
+- `API_BASE_URL` — API endpoint used by the OpenAI-compatible client
+- `MODEL_NAME` — model identifier used for inference
+- `HF_TOKEN` — Hugging Face token (or compatible API key)
+
+Optional provider keys:
+
+- `OPENAI_API_KEY` for OpenAI
+- `GROQ_API_KEY` for Groq
+
+The submission script is `inference.py` at project root and uses the OpenAI Python client interface for all LLM calls.
+
+## Inference Output Contract
+
+`inference.py` emits structured stdout in strict evaluator format:
+
+- `[START] task=<task_name> env=vpp model=<model_name>`
+- `[STEP] step=<n> action=<json> reward=<0.00> done=<true|false> error=<msg|null>`
+- `[END] success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>`
+
+Only those lines are printed to stdout. Diagnostics are written to stderr.
+
 ---
 
 ## Tasks (5 Total)
@@ -226,9 +251,38 @@ p2p_revenue       = p2p_exported_kw × 0.25 h × (p2p_price / 1000) per home
 ## RL Training (5-Phase Curriculum)
 
 ```bash
-uvicorn server.app:app --host 0.0.0.0 --port 8000
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 python train_rl.py
 ```
+
+## OpenEnv and Pre-Submission Validation
+
+```bash
+# OpenEnv schema/runtime validation
+openenv validate
+
+# Local validator
+python validate.py --url http://localhost:7860
+
+# Baseline reproducibility check
+python baseline_inference.py --agent rule --json-only
+python baseline_inference.py --agent rule --json-only
+```
+
+## Docker and HF Spaces
+
+```bash
+docker build -t openenv-vpp .
+docker run --rm -p 7860:7860 openenv-vpp
+```
+
+Health check:
+
+```bash
+curl http://localhost:7860/health
+```
+
+For Hugging Face Spaces, set runtime variables (`API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN`) in Space settings and tag the Space with `openenv`.
 
 Curriculum:
 1. **Easy** (200k steps) — learn basic arbitrage

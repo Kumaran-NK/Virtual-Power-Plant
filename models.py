@@ -375,3 +375,9 @@ class ParetoScore(BaseModel):
     dr_bids_failed:           int   = Field(0)
     steps_completed:          int   = Field(0)
     done:                     bool  = Field(False)
+
+
+class VppReward(BaseModel):
+    """Typed reward payload for documentation and schema introspection."""
+
+    reward: float = Field(..., description="Per-step scalar reward returned by /step.")

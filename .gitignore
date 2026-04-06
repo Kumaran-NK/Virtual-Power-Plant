@@ -69,3 +69,11 @@ htmlcov/
 # Keep required files
 # =========================
 !baseline_scores.json
+
+.agents
+
+.claude
+
+.codex
+
+openenv_vpp.egg-info

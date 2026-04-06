@@ -12,7 +12,7 @@ Curriculum RL training for the VPP environment — Extended Edition.
 Total: 750k environment steps.
 
 Usage:
-  uvicorn server.app:app --host 0.0.0.0 --port 8000   # terminal 1
+    uvicorn server.app:app --host 0.0.0.0 --port 7860   # terminal 1
   python train_rl.py                                    # terminal 2
 """
 
@@ -28,7 +28,7 @@ from stable_baselines3.common.monitor import Monitor
 
 from gymwrapper import VppGymEnv
 
-SERVER_URL      = os.getenv("VPP_SERVER_URL", "http://localhost:8000")
+SERVER_URL      = os.getenv("VPP_SERVER_URL", "http://localhost:7860")
 TENSORBOARD_LOG = "./vpp_tensorboard/"
 CHECKPOINT_DIR  = "./checkpoints/"
 
@@ -113,7 +113,7 @@ def main():
         assert resp.status_code == 200
         print(f"Server reachable at {SERVER_URL}.")
     except Exception as e:
-        print(f"ERROR: Cannot reach VPP server.\nStart with: uvicorn server.app:app --host 0.0.0.0 --port 8000\nDetails: {e}")
+        print(f"ERROR: Cannot reach VPP server.\nStart with: uvicorn server.app:app --host 0.0.0.0 --port 7860\nDetails: {e}")
         return
 
     init_env = DummyVecEnv([make_env("easy-arbitrage")])

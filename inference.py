@@ -28,8 +28,10 @@ from openai import OpenAI
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+from dotenv import load_dotenv
+load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY",   "")
 HF_TOKEN       = os.getenv("HF_TOKEN",        "") or os.getenv("API_KEY", "")
 API_BASE_URL   = os.getenv("API_BASE_URL",    "")
@@ -46,18 +48,21 @@ MAX_STEPS = 48
 client: Optional[OpenAI] = None
 DEFAULT_MODEL: str = ""
 USE_LLM = False  # Will be set to True if a working API key is found
+CLIENT_TYPE: str = ""  # Track which provider: "openai", "groq", "huggingface", or ""
 
 # Try OpenAI first
 if OPENAI_API_KEY:
     client = OpenAI(api_key=OPENAI_API_KEY, max_retries=0)
     DEFAULT_MODEL = MODEL_NAME_ENV or "gpt-4o-mini"
     USE_LLM = True
+    CLIENT_TYPE = "openai"
     print(f"[INFO] Using OpenAI with model: {DEFAULT_MODEL}", file=sys.stderr)
 # Then Groq
 elif GROQ_API_KEY:
     client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1", max_retries=0)
     DEFAULT_MODEL = MODEL_NAME_ENV or "llama-3.1-8b-instant"
     USE_LLM = True
+    CLIENT_TYPE = "groq"
     print(f"[INFO] Using Groq with model: {DEFAULT_MODEL}", file=sys.stderr)
 # Finally Hugging Face Router
 elif HF_TOKEN:
@@ -65,11 +70,13 @@ elif HF_TOKEN:
     client = OpenAI(api_key=HF_TOKEN, base_url=base, max_retries=0)
     DEFAULT_MODEL = MODEL_NAME_ENV or "Qwen/Qwen2.5-72B-Instruct"
     USE_LLM = True
+    CLIENT_TYPE = "huggingface"
     print(f"[INFO] Using Hugging Face Router with model: {DEFAULT_MODEL}", file=sys.stderr)
 else:
     USE_LLM = False
+    CLIENT_TYPE = ""
     DEFAULT_MODEL = "rule-based-smart-agent-v2"
-    print("[WARNING] No API key found. Falling back to rule‑based agent.", file=sys.stderr)
+    print("[WARNING] No API key found. Falling back to rule-based agent.", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Prompts (identical to baseline_inference.py)
@@ -142,7 +149,7 @@ def _summarise_obs(obs: dict) -> dict:
         "time_of_day":      f"{h:02d}:{m:02d}",
         "price":            obs.get("market_price_per_mwh", 50.0),
         "freq":             obs.get("grid_frequency_hz", 50.0),
-        "grid_status":      "CONNECTED" if obs.get("grid_connected", True) else "⚠ ISLANDED",
+        "grid_status":      "CONNECTED" if obs.get("grid_connected", True) else "ISLANDED",
         "mean_soc":         sum(socs) / len(socs),
         "mean_soh":         sum(sohs) / len(sohs),
         "solar":            sum(solar)  / max(len(solar), 1),
@@ -274,7 +281,15 @@ def get_llm_action(obs: dict, task_id: str) -> Dict[str, Any]:
 
 
 def run_episode(task_id: str) -> float:
-    """Run one full episode and return the final Pareto score."""
+    """
+    Run one full episode and emit strict [START]/[STEP]/[END] format to stdout.
+    All diagnostics go to stderr.
+    
+    Format (strictly enforced):
+      [START] task=<task_id> env=vpp model=<model_name>
+      [STEP] step=<int> action=<json_compact> reward=<0.00> done=<true|false> error=<null|msg>
+      [END] success=<true|false> steps=<int> score=<0.00> rewards=<0.00,0.00,...>
+    """
     session = requests.Session()
     step = 0
     rewards: List[float] = []
@@ -283,21 +298,30 @@ def run_episode(task_id: str) -> float:
     score = 0.0
 
     try:
+        # Wait for server readiness before printing START
         resp = session.post(f"{VPP_SERVER_URL}/reset", params={"task_id": task_id}, timeout=15)
         resp.raise_for_status()
         obs = resp.json()
 
-        print(f"[START] task={task_id} env={BENCHMARK} model={DEFAULT_MODEL}", flush=True)
+        # [START] line — exactly one line to stdout, nothing else
+        sys.stdout.write(f"[START] task={task_id} env={BENCHMARK} model={DEFAULT_MODEL}\n")
+        sys.stdout.flush()
 
         while not done and step < MAX_STEPS:
-            error_str = "null"
-            action = {"global_charge_rate": 0.0, "min_reserve_pct": 0.2,
-                      "defer_ev_charging": 0.0, "accept_dr_bid": False, "p2p_export_rate": 0.0}
+            error_msg = None  # None means "null" in output; str means error message
+            action = {
+                "global_charge_rate": 0.0,
+                "min_reserve_pct": 0.2,
+                "defer_ev_charging": 0.0,
+                "accept_dr_bid": False,
+                "p2p_export_rate": 0.0,
+            }
+            
             try:
                 action = get_llm_action(obs, task_id)
             except Exception as llm_err:
                 action = _rule_agent(obs, task_id)
-                error_str = str(llm_err).replace("\n", " ")[:120]
+                error_msg = str(llm_err)[:100]  # Truncate error message
 
             try:
                 step_resp = session.post(f"{VPP_SERVER_URL}/step", json=action, timeout=15)
@@ -308,46 +332,59 @@ def run_episode(task_id: str) -> float:
                 done = bool(data["done"])
                 rewards.append(reward)
                 step += 1
-                print(
-                    f"[STEP] step={step} action={json.dumps(action)} "
-                    f"reward={reward:.2f} done={str(done).lower()} error={error_str}",
-                    flush=True,
+                
+                # [STEP] line — exactly one line to stdout, compact JSON action
+                action_json = json.dumps(action, separators=(",", ":"), sort_keys=True)
+                error_str = "null" if error_msg is None else error_msg.replace("\n", " ")
+                sys.stdout.write(
+                    f"[STEP] step={step} action={action_json} "
+                    f"reward={reward:.2f} done={str(done).lower()} error={error_str}\n"
                 )
+                sys.stdout.flush()
+                
             except Exception as step_err:
                 rewards.append(0.0)
                 step += 1
-                print(
-                    f"[STEP] step={step} action={json.dumps(action)} "
-                    f"reward=0.00 done=false error={str(step_err)[:120]}",
-                    flush=True,
+                
+                # [STEP] line on error
+                action_json = json.dumps(action, separators=(",", ":"), sort_keys=True)
+                error_str = str(step_err)[:100].replace("\n", " ")
+                sys.stdout.write(
+                    f"[STEP] step={step} action={action_json} "
+                    f"reward=0.00 done=false error={error_str}\n"
                 )
+                sys.stdout.flush()
                 break
 
+        # Retrieve final grader score
         try:
             grader_resp = session.get(f"{VPP_SERVER_URL}/grader", timeout=10)
             grader_data = grader_resp.json()
             score = float(grader_data.get("aggregate_score", 0.0))
             success = done and score > 0.0
-        except Exception:
+        except Exception as grader_err:
+            print(f"[WARNING] Could not fetch grader: {grader_err}", file=sys.stderr)
             score = 0.0
             success = False
 
     except Exception as outer_err:
-        print(
-            f"[END] success=false steps={step} score=0.00 "
-            f"rewards={','.join(f'{r:.2f}' for r in rewards)}",
-            flush=True,
+        # [END] line even on failure
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+        sys.stdout.write(
+            f"[END] success=false steps={step} score=0.00 rewards={rewards_str}\n"
         )
-        print(f"[ERROR] {outer_err}", file=sys.stderr)
+        sys.stdout.flush()
+        print(f"[ERROR] Episode failed: {outer_err}", file=sys.stderr)
         session.close()
         return 0.0
 
+    # [END] line — exactly one line to stdout, completed episode
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(
-        f"[END] success={str(success).lower()} steps={step} "
-        f"score={score:.2f} rewards={rewards_str}",
-        flush=True,
+    sys.stdout.write(
+        f"[END] success={str(success).lower()} steps={step} score={score:.2f} rewards={rewards_str}\n"
     )
+    sys.stdout.flush()
+    
     session.close()
     return score
 
@@ -366,18 +403,34 @@ def _wait_for_server(timeout: int = 30) -> bool:
 
 
 def main():
+    """
+    Main entry point for inference.
+    All environment variable warnings and summary output go to stderr.
+    Only [START], [STEP], [END] lines go to stdout.
+    """
+    # Log required env vars to stderr, never to stdout
+    required_env = ["API_BASE_URL", "MODEL_NAME", "HF_TOKEN"]
+    missing = [k for k in required_env if not os.getenv(k)]
+    if missing:
+        print(f"[WARNING] Missing expected env vars: {', '.join(missing)}", file=sys.stderr)
+
     if not _wait_for_server(30):
-        print(f"[ERROR] VPP server not reachable at {VPP_SERVER_URL}.", file=sys.stderr)
+        print(f"[ERROR] VPP server not reachable at {VPP_SERVER_URL}", file=sys.stderr)
         sys.exit(1)
 
     from server.task_curves import ALL_TASK_IDS
+    
     scores = {}
     for task in ALL_TASK_IDS:
         scores[task] = run_episode(task)
 
-    print("\n--- Score Summary ---", file=sys.stderr)
+    # Summary output to stderr only
+    print("\n--- Task Scores ---", file=sys.stderr)
     for task, sc in scores.items():
         print(f"  {task:<35}  {sc:.4f}", file=sys.stderr)
+
+    avg_score = sum(scores.values()) / max(len(scores), 1)
+    print(f"[INFO] Average score: {avg_score:.4f}", file=sys.stderr)
 
 
 if __name__ == "__main__":
