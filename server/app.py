@@ -33,6 +33,9 @@ from server.task_curves import ALL_TASK_IDS, TASK_METADATA
 # ---------------------------------------------------------------------------
 # Create OpenEnv app with lifecycle and session management
 # ---------------------------------------------------------------------------
+# Note: create_openenv_app returns a fully configured FastAPI application
+# with /reset, /step, /health, /state, /metadata, /schema/ endpoints.
+# Additional custom endpoints are added below.
 
 app: FastAPI = create_openenv_app(
     env=lambda: VppEnvironment(),  # Factory function for environment instances
