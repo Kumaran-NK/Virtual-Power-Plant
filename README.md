@@ -36,8 +36,10 @@ uvicorn server.app:app --host 0.0.0.0 --port 7860
 python baseline_inference.py --agent rule
 
 # 4. Run the LLM agent
-export OPENAI_API_KEY=sk-...
-python baseline_inference.py --agent llm
+export API_BASE_URL=https://router.huggingface.co/v1
+export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
+export HF_TOKEN=hf_xxx_or_api_key
+python inference.py
 ```
 
 ## Required Environment Variables
@@ -47,11 +49,14 @@ The evaluator expects these variables to be configured in your runtime environme
 - `API_BASE_URL` — API endpoint used by the OpenAI-compatible client
 - `MODEL_NAME` — model identifier used for inference
 - `HF_TOKEN` — Hugging Face token (or compatible API key)
+- `LOCAL_IMAGE_NAME` — optional, only if your workflow uses `from_docker_image()`
 
-Optional provider keys:
+Defaults in `inference.py` are set only for:
 
-- `OPENAI_API_KEY` for OpenAI
-- `GROQ_API_KEY` for Groq
+- `API_BASE_URL`
+- `MODEL_NAME`
+
+`HF_TOKEN` has no default and must be provided in deployment/runtime config.
 
 The submission script is `inference.py` at project root and uses the OpenAI Python client interface for all LLM calls.
 

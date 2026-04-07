@@ -12,6 +12,7 @@ Custom OpenEnv-compatible endpoints:
   GET  /baseline       Returns pre-computed baseline scores
 """
 
+import contextvars
 import json
 import os
 import subprocess
@@ -25,7 +26,7 @@ from fastapi.responses import JSONResponse
 from openenv.core import create_app as create_openenv_app
 
 from models import VppAction, VppObservation, VppState, ParetoScore, VppReward
-from server.vpp_environment import VppEnvironment, _current_instance
+from server.vpp_environment import VppEnvironment, get_current_env_instance
 from server.task_curves import ALL_TASK_IDS, TASK_METADATA
 
 
@@ -48,20 +49,19 @@ _baseline_result  = None
 
 
 # ---------------------------------------------------------------------------
-# Helper: access current environment instance
+# Helper: access current environment instance (request-local, thread-safe)
 # ---------------------------------------------------------------------------
 
 def get_current_env() -> VppEnvironment:
     """
-    Retrieve the current environment instance.
+    Retrieve the current environment instance for this request/session.
+    Uses contextvars for thread-safe, async-compatible storage.
     Raises HTTPException if no environment is active.
     """
-    global _current_instance
-    # Access the module-level _current_instance variable
-    from server.vpp_environment import _current_instance as env_inst
-    if env_inst is None or env_inst.state is None:
+    env = get_current_env_instance()
+    if env is None or env.state is None:
         raise HTTPException(status_code=400, detail="Environment not initialised — call /reset first.")
-    return env_inst
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -133,9 +133,13 @@ async def get_grader_score():
 # ---------------------------------------------------------------------------
 
 @app.post("/trace")
-async def submit_trace(reasoning: str, action: VppAction):
+async def submit_trace(action: VppAction, reasoning: str = Query(...)):
     """
     Submit a reasoning trace alongside an action for LLM quality scoring.
+
+    Accepts:
+      - action: as JSON body (VppAction object)
+      - reasoning: as query parameter (e.g., ?reasoning=agent_explanation)
 
     The trace is stored server-side and evaluated at episode end (GET /grader
     returns reasoning_quality_score when traces are present).

@@ -8,11 +8,11 @@ STDOUT FORMAT (strictly enforced):
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
 This script automatically falls back to a rule‑based agent if:
-- No API key is provided (OPENAI_API_KEY, GROQ_API_KEY, or HF_TOKEN)
+- No API key is provided (HF_TOKEN)
 - The LLM call fails (network, rate limits, authentication, etc.)
 - Monthly credits are exhausted (HTTP 402)
 
-It supports OpenAI, Groq, and Hugging Face Router.
+It supports OpenAI only.
 """
 
 import json
@@ -31,11 +31,13 @@ from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GROQ_API_KEY   = os.getenv("GROQ_API_KEY",   "")
-HF_TOKEN       = os.getenv("HF_TOKEN",        "") or os.getenv("API_KEY", "")
-API_BASE_URL   = os.getenv("API_BASE_URL",    "")
-MODEL_NAME_ENV = os.getenv("MODEL_NAME",      "")
+# Required by submission checklist
+API_BASE_URL   = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME_ENV = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN       = os.getenv("HF_TOKEN")
+# Optional when using from_docker_image() workflows
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+
 VPP_SERVER_URL = os.getenv("VPP_SERVER_URL", "http://localhost:7860")
 
 BENCHMARK = "vpp"
@@ -48,35 +50,17 @@ MAX_STEPS = 48
 client: Optional[OpenAI] = None
 DEFAULT_MODEL: str = ""
 USE_LLM = False  # Will be set to True if a working API key is found
-CLIENT_TYPE: str = ""  # Track which provider: "openai", "groq", "huggingface", or ""
 
-# Try OpenAI first
-if OPENAI_API_KEY:
-    client = OpenAI(api_key=OPENAI_API_KEY, max_retries=0)
-    DEFAULT_MODEL = MODEL_NAME_ENV or "gpt-4o-mini"
+# OpenAI client configured through required checklist variables
+if HF_TOKEN:
+    client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL, max_retries=0)
+    DEFAULT_MODEL = MODEL_NAME_ENV
     USE_LLM = True
-    CLIENT_TYPE = "openai"
-    print(f"[INFO] Using OpenAI with model: {DEFAULT_MODEL}", file=sys.stderr)
-# Then Groq
-elif GROQ_API_KEY:
-    client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1", max_retries=0)
-    DEFAULT_MODEL = MODEL_NAME_ENV or "llama-3.1-8b-instant"
-    USE_LLM = True
-    CLIENT_TYPE = "groq"
-    print(f"[INFO] Using Groq with model: {DEFAULT_MODEL}", file=sys.stderr)
-# Finally Hugging Face Router
-elif HF_TOKEN:
-    base = API_BASE_URL or "https://router.huggingface.co/v1"
-    client = OpenAI(api_key=HF_TOKEN, base_url=base, max_retries=0)
-    DEFAULT_MODEL = MODEL_NAME_ENV or "Qwen/Qwen2.5-72B-Instruct"
-    USE_LLM = True
-    CLIENT_TYPE = "huggingface"
-    print(f"[INFO] Using Hugging Face Router with model: {DEFAULT_MODEL}", file=sys.stderr)
+    print(f"[INFO] Using OpenAI client with model: {DEFAULT_MODEL}", file=sys.stderr)
 else:
     USE_LLM = False
-    CLIENT_TYPE = ""
     DEFAULT_MODEL = "rule-based-smart-agent-v2"
-    print("[WARNING] No API key found. Falling back to rule-based agent.", file=sys.stderr)
+    print("[WARNING] HF_TOKEN not found. Falling back to rule-based agent.", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Prompts (identical to baseline_inference.py)
@@ -172,6 +156,14 @@ def _extract_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _extract_response_text(response: Any) -> str:
+    # OpenAI Chat Completions
+    if hasattr(response, "choices"):
+        return (response.choices[0].message.content or "").strip()
+
+    return str(response).strip()
+
+
 def _rule_agent(obs: dict, task_id: str = "") -> Dict[str, Any]:
     """Deterministic rule‑based agent (covers all extended mechanics)."""
     freq      = obs.get("grid_frequency_hz", 50.0)
@@ -256,7 +248,8 @@ def get_llm_action(obs: dict, task_id: str) -> Dict[str, Any]:
                 temperature=0.1,
                 max_tokens=120,
             )
-            text = response.choices[0].message.content.strip()
+
+            text = _extract_response_text(response)
             decision = _extract_json(text)
             return {
                 "global_charge_rate": float(max(-1.0, min(1.0, decision.get("global_charge_rate", 0.0)))),
@@ -280,6 +273,46 @@ def get_llm_action(obs: dict, task_id: str) -> Dict[str, Any]:
     return _rule_agent(obs, task_id)
 
 
+def _extract_observation(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise API responses that may wrap observations under an 'observation' key."""
+    if isinstance(payload, dict) and isinstance(payload.get("observation"), dict):
+        return payload["observation"]
+    return payload if isinstance(payload, dict) else {}
+
+
+def _post_step(session: requests.Session, action: Dict[str, Any], timeout: int = 15) -> requests.Response:
+    """Post one step action with compatibility for wrapped and flat request schemas."""
+    # OpenEnv create_app expects a wrapped payload: {"action": {...}}
+    response = session.post(f"{VPP_SERVER_URL}/step", json={"action": action}, timeout=timeout)
+    if response.status_code != 422:
+        return response
+
+    # Backward compatibility for servers that expect a flat action body
+    try:
+        detail = response.json().get("detail", [])
+    except Exception:
+        return response
+
+    expects_flat_body = any(
+        isinstance(item, dict) and item.get("loc") == ["body", "global_charge_rate"]
+        for item in detail
+    )
+    if expects_flat_body:
+        return session.post(f"{VPP_SERVER_URL}/step", json=action, timeout=timeout)
+
+    return response
+
+
+def _post_trace(session: requests.Session, action: Dict[str, Any], timeout: int = 15) -> requests.Response:
+    """Fallback step execution using the custom /trace endpoint."""
+    return session.post(
+        f"{VPP_SERVER_URL}/trace",
+        params={"reasoning": "inference-fallback"},
+        json=action,
+        timeout=timeout,
+    )
+
+
 def run_episode(task_id: str) -> float:
     """
     Run one full episode and emit strict [START]/[STEP]/[END] format to stdout.
@@ -301,7 +334,7 @@ def run_episode(task_id: str) -> float:
         # Wait for server readiness before printing START
         resp = session.post(f"{VPP_SERVER_URL}/reset", params={"task_id": task_id}, timeout=15)
         resp.raise_for_status()
-        obs = resp.json()
+        obs = _extract_observation(resp.json())
 
         # [START] line — exactly one line to stdout, nothing else
         sys.stdout.write(f"[START] task={task_id} env={BENCHMARK} model={DEFAULT_MODEL}\n")
@@ -324,18 +357,39 @@ def run_episode(task_id: str) -> float:
                 error_msg = str(llm_err)[:100]  # Truncate error message
 
             try:
-                step_resp = session.post(f"{VPP_SERVER_URL}/step", json=action, timeout=15)
-                step_resp.raise_for_status()
+                # Try to use /trace endpoint for reasoning traces (optional)
+                # Fall back to /step if /trace doesn't work or isn't available
+                trace_resp = _post_trace(session, action, timeout=15)
+                if trace_resp.status_code < 400:
+                    step_resp = trace_resp
+                else:
+                    # Fall back to /step on any error (404, 400, 422, etc.)
+                    step_resp = _post_step(session, action, timeout=15)
+                    if step_resp.status_code >= 400:
+                        raise requests.HTTPError(
+                            f"step={step_resp.status_code} {step_resp.reason}"
+                        )
+                
                 data = step_resp.json()
-                obs = data["observation"]
+                obs = _extract_observation(data)
                 reward = float(data["reward"])
                 done = bool(data["done"])
                 rewards.append(reward)
                 step += 1
+
+                # Prefer raw environment last_action_error when present.
+                last_action_error = None
+                if isinstance(data, dict):
+                    info_obj = data.get("info")
+                    if isinstance(info_obj, dict):
+                        raw_err = info_obj.get("last_action_error")
+                        if raw_err not in (None, ""):
+                            last_action_error = str(raw_err)
                 
                 # [STEP] line — exactly one line to stdout, compact JSON action
                 action_json = json.dumps(action, separators=(",", ":"), sort_keys=True)
-                error_str = "null" if error_msg is None else error_msg.replace("\n", " ")
+                effective_error = last_action_error if last_action_error is not None else error_msg
+                error_str = "null" if effective_error is None else str(effective_error).replace("\n", " ")
                 sys.stdout.write(
                     f"[STEP] step={step} action={action_json} "
                     f"reward={reward:.2f} done={str(done).lower()} error={error_str}\n"
@@ -409,7 +463,7 @@ def main():
     Only [START], [STEP], [END] lines go to stdout.
     """
     # Log required env vars to stderr, never to stdout
-    required_env = ["API_BASE_URL", "MODEL_NAME", "HF_TOKEN"]
+    required_env = ["HF_TOKEN"]
     missing = [k for k in required_env if not os.getenv(k)]
     if missing:
         print(f"[WARNING] Missing expected env vars: {', '.join(missing)}", file=sys.stderr)

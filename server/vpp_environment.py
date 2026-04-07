@@ -63,7 +63,17 @@ from server.task_curves import (
     HIGH_EMISSION_STEPS, DR_BID_INTERVAL, TASK_METADATA, ALL_TASK_IDS,
 )
 
+# Global reference to current environment instance (set by __init__)
+# Note: Multi-concurrent environments share this reference, which works fine for
+# sequential single-session usage. For true multi-session concurrency, use FastAPI's
+# Depends() and request context, or OpenEnv's built-in session management.
 _current_instance: "VppEnvironment | None" = None
+
+
+def get_current_env_instance() -> "VppEnvironment | None":
+    """Retrieve the current environment instance."""
+    return _current_instance
+
 
 _ZONE_A_START, _ZONE_A_END = 0,  40
 _ZONE_B_START, _ZONE_B_END = 40, 100
@@ -228,6 +238,14 @@ class VppEnvironment(Environment):
     def step(self, action: VppAction) -> Tuple[VppObservation, float, bool, dict]:
         if self._state is None or self._state.done:
             raise RuntimeError("Call reset() before step().")
+
+        if (
+            self._true_solar is None
+            or self._true_demand is None
+            or self._true_price is None
+            or self._emission_curve is None
+        ):
+            raise RuntimeError("Missing environment curves. Call reset() before step().")
 
         s             = self._current_step
         solar_kw      = float(self._true_solar[s])
@@ -493,6 +511,18 @@ class VppEnvironment(Environment):
             return ParetoScore(
                 profit_score=0.0, safety_score=1.0, carbon_score=0.0,
                 degradation_score=1.0, dr_score=0.0, aggregate_score=0.0,
+                cumulative_profit_usd=0.0,
+                cumulative_p2p_usd=0.0,
+                cumulative_dr_bonus_usd=0.0,
+                safety_violations=0,
+                grid_emergencies_ignored=0,
+                islanding_blackouts=0,
+                carbon_credits_balance=0.0,
+                mean_state_of_health=1.0,
+                dr_bids_fulfilled=0,
+                dr_bids_failed=0,
+                steps_completed=0,
+                done=False,
             )
 
         meta = TASK_METADATA.get(self._task_id, TASK_METADATA["easy-arbitrage"])
@@ -564,7 +594,8 @@ class VppEnvironment(Environment):
 
     @classmethod
     def get_class_score(cls) -> float:
-        return _current_instance._get_pareto_score().aggregate_score if _current_instance else 0.0
+        env = get_current_env_instance()
+        return env._get_pareto_score().aggregate_score if env and env.state else 0.0
 
     # ── Reasoning traces ─────────────────────────────────────────────────────
 
@@ -575,6 +606,8 @@ class VppEnvironment(Environment):
 
     @property
     def state(self) -> VppState:
+        if self._state is None:
+            raise RuntimeError("State unavailable. Call reset() first.")
         return self._state
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -610,9 +643,18 @@ class VppEnvironment(Environment):
                 committed_steps=0,
                 steps_remaining=max(0, self._dr_until_step - step),
             )
-        return DRBid(active=False)
+        return DRBid(
+            active=False,
+            premium_multiplier=1.0,
+            committed_power_kw=0.0,
+            committed_steps=0,
+            steps_remaining=0,
+        )
 
     def _build_zone_aggregates(self, idx: int) -> List[ZoneTelemetry]:
+        if self._true_solar is None or self._true_demand is None:
+            raise RuntimeError("Missing environment curves. Call reset() before building aggregates.")
+
         solar_kw  = float(self._true_solar[idx])
         demand_kw = float(self._true_demand[idx])
 
@@ -652,6 +694,9 @@ class VppEnvironment(Environment):
         return result
 
     def _build_observation(self) -> VppObservation:
+        if self._true_solar is None or self._true_demand is None or self._true_price is None:
+            raise RuntimeError("Missing environment curves. Call reset() before observation.")
+
         idx = min(self._current_step, EPISODE_STEPS - 1)
         now = self._episode_start + timedelta(minutes=15 * idx)
 
