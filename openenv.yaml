@@ -1,0 +1,41 @@
+spec_version: 1
+name: vpp
+display_name: "Virtual Power Plant Orchestrator"
+description: >
+  Manage 100 home batteries in a simulated neighbourhood to maximize grid
+  profit while maintaining safety constraints. One step = 15 minutes.
+  48 steps = 12-hour episode. Two home zones (Zone A standard, Zone B with EVs).
+
+tasks:
+  - id: "easy-arbitrage"
+    description: "High solar, low demand, flat $50/MWh price. Sell surplus. Profit target $250."
+    difficulty: easy
+
+  - id: "medium-forecast-error"
+    description: "Heatwave: 4× AC demand spike 10:00–14:00. Sinusoidal pricing. Profit target $100."
+    difficulty: medium
+
+  - id: "hard-frequency-response"
+    description: "Grid stress: 10× price spike + frequency emergency at step 26 (12:30). Profit target $500."
+    difficulty: hard
+
+  - id: "expert-demand-response"
+    description: "DR auctions every 6 steps with premium multipliers and adversarial cloud disruption. Profit target $800."
+    difficulty: expert
+
+  - id: "islanding-emergency"
+    description: "Grid disconnect between steps 20-29. Preserve home power and exploit reconnection spike. Profit target $400."
+    difficulty: hard
+
+type: space
+runtime: fastapi
+app: server.app:app
+port: 7860
+
+tags:
+  - energy
+  - reinforcement-learning
+  - optimization
+  - battery-management
+  - smart-grid
+  - openenv

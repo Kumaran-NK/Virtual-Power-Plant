@@ -1,0 +1,81 @@
+# =========================
+# Python basics
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Virtual environments
+# =========================
+venv/
+.venv/
+env/
+ENV/
+
+# =========================
+# Environment variables
+# =========================
+.env
+
+# =========================
+# Build / packaging
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================
+# IDE / Editor files
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# RL / ML artifacts (IMPORTANT)
+# =========================
+checkpoints/
+vpp_tensorboard/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.zip
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Testing
+# =========================
+.pytest_cache/
+pytest_*.txt
+.coverage
+htmlcov/
+.tox/
+
+# =========================
+# Keep required files
+# =========================
+!baseline_scores.json
+
+.agents
+
+.claude
+
+.codex
+
+openenv_vpp.egg-info
+
+.env
