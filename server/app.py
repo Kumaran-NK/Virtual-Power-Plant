@@ -49,6 +49,16 @@ _baseline_result  = None
 
 
 # ---------------------------------------------------------------------------
+# Debug: Simple root endpoint to verify app is running
+# ---------------------------------------------------------------------------
+
+@app.get("/")
+async def root():
+    """Simple root endpoint for health check."""
+    return {"status": "ok", "service": "VPP OpenEnv Environment"}
+
+
+# ---------------------------------------------------------------------------
 # Helper: access current environment instance (request-local, thread-safe)
 # ---------------------------------------------------------------------------
 
