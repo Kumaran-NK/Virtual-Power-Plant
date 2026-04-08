@@ -1,5 +1,12 @@
 ---
 title: Virtual Power Plant Orchestrator — Extended Edition
+emoji: ⚡
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_file: Dockerfile
+app_port: 7860
+python_version: "3.10"
 tags:
   - fastapi
   - reinforcement-learning
