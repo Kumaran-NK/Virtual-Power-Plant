@@ -47,7 +47,7 @@ P2P trading
 import contextvars
 import random
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -160,12 +160,18 @@ class VppEnvironment(Environment):
 
     # ── reset ─────────────────────────────────────────────────────────────────
 
-    def reset(self, task_id: str = "easy-arbitrage") -> VppObservation:
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        episode_id: Optional[str] = None,
+        **kwargs,
+    ) -> VppObservation:
+        task_id = str(kwargs.get("task_id", "easy-arbitrage"))
         self._task_id = task_id
 
-        seed = abs(hash(task_id)) % (2 ** 31)
-        random.seed(seed)
-        np.random.seed(seed)
+        seed_value = int(seed) if seed is not None else abs(hash(task_id)) % (2 ** 31)
+        random.seed(seed_value)
+        np.random.seed(seed_value)
 
         self._true_solar  = solar_curve(task_id)
         self._true_demand = demand_curve(task_id)
@@ -195,7 +201,7 @@ class VppEnvironment(Environment):
         weather = meta["weather"]
 
         self._state = VppState(
-            episode_id=f"ep_{task_id}_{seed % 10_000:04d}",
+            episode_id=episode_id or f"ep_{task_id}_{seed_value % 10_000:04d}",
             step_count=0,
             current_step=0,
             task_tier=task_id,
@@ -236,7 +242,7 @@ class VppEnvironment(Environment):
 
     # ── step ──────────────────────────────────────────────────────────────────
 
-    def step(self, action: VppAction) -> Tuple[VppObservation, float, bool, dict]:
+    def step(self, action: VppAction, timeout_s: Optional[float] = None, **kwargs) -> VppObservation:
         if self._state is None or self._state.done:
             raise RuntimeError("Call reset() before step().")
 
@@ -492,7 +498,10 @@ class VppEnvironment(Environment):
             "islanding_blackout_homes":   islanding_blackout_homes,
             "new_dr_bid_accepted":        new_dr_bid_accepted,
         }
-        return obs, round(reward, 6), done, info
+        obs.reward = round(reward, 6)
+        obs.done = done
+        obs.metadata = info
+        return obs
 
     # ── Grader ────────────────────────────────────────────────────────────────
 

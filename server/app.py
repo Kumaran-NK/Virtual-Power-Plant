@@ -155,14 +155,14 @@ async def submit_trace(action: VppAction, reasoning: str = Query(...)):
 
     # Inject reasoning into action and step
     action.reasoning = reasoning
-    obs, reward, done, info = env.step(action)
+    obs = env.step(action)
 
     traces = env.get_reasoning_traces()
     return {
         "observation": obs,
-        "reward":      reward,
-        "done":        done,
-        "info":        info,
+        "reward":      obs.reward,
+        "done":        obs.done,
+        "info":        obs.metadata,
         "trace_count": len(traces),
         "reasoning_stored": True,
     }
