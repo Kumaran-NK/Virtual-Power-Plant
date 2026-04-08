@@ -188,6 +188,8 @@ class VppObservation(Observation):
       dr_bid                     — active demand-response bid details
       ev_defer_deadline_step     — step by which deferred EV charging must be repaid
       p2p_last_revenue_usd       — P2P revenue earned in the previous step
+            note: reward, done, and metadata are inherited from OpenEnv's base
+                        Observation model and surfaced unchanged here.
     """
 
     timestamp:   datetime = Field(..., description="Wall-clock time of this step (UTC).")
@@ -265,7 +267,7 @@ class VppObservation(Observation):
 
     # ── Demand Response ───────────────────────────────────────────────────────
     dr_bid: DRBid = Field(
-        default_factory=DRBid,
+        default_factory=lambda: DRBid(),
         description="Current demand-response bid posted by the grid operator.",
     )
     ev_defer_deadline_step: int = Field(

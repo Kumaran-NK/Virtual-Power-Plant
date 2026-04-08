@@ -110,8 +110,6 @@ class VppEnvironment(Environment):
     # ── Construction ──────────────────────────────────────────────────────────
 
     def __init__(self):
-        _current_env_var.set(self)
-
         self.assets: List[BatteryAsset] = [
             BatteryAsset(
                 asset_id=f"home-{i:03d}",
@@ -158,15 +156,28 @@ class VppEnvironment(Environment):
         # Reasoning trace storage
         self._reasoning_traces: List[dict] = []
 
+        # Register this instance in the request-local context so reset() and step()
+        # can share state across HTTP requests in the same session.
+        _current_env_var.set(self)
+
     # ── reset ─────────────────────────────────────────────────────────────────
 
     def reset(
         self,
-        seed: Optional[int] = None,
+        seed: Optional[int | str] = None,
         episode_id: Optional[str] = None,
         **kwargs,
     ) -> VppObservation:
-        task_id = str(kwargs.get("task_id", "easy-arbitrage"))
+        task_id_arg = kwargs.get("task_id")
+        task_id = str(task_id_arg) if task_id_arg is not None else "easy-arbitrage"
+
+        if isinstance(seed, str):
+            if task_id_arg is None and not seed.lstrip("-").isdigit():
+                task_id = seed
+                seed = None
+            else:
+                seed = int(seed)
+
         self._task_id = task_id
 
         seed_value = int(seed) if seed is not None else abs(hash(task_id)) % (2 ** 31)
@@ -481,7 +492,6 @@ class VppEnvironment(Environment):
                 "step_profit": round(step_profit, 4),
             })
 
-        obs  = self._build_observation()
         info = {
             "step_profit_usd":            round(step_profit, 4),
             "step_p2p_revenue_usd":       round(step_p2p_revenue, 4),
@@ -498,9 +508,11 @@ class VppEnvironment(Environment):
             "islanding_blackout_homes":   islanding_blackout_homes,
             "new_dr_bid_accepted":        new_dr_bid_accepted,
         }
-        obs.reward = round(reward, 6)
-        obs.done = done
-        obs.metadata = info
+        obs = self._build_observation(
+            reward=round(reward, 6),
+            done=done,
+            metadata=info,
+        )
         return obs
 
     # ── Grader ────────────────────────────────────────────────────────────────
@@ -703,7 +715,12 @@ class VppEnvironment(Environment):
 
         return result
 
-    def _build_observation(self) -> VppObservation:
+    def _build_observation(
+        self,
+        reward: float = 0.0,
+        done: bool = False,
+        metadata: Optional[Dict[str, object]] = None,
+    ) -> VppObservation:
         if self._true_solar is None or self._true_demand is None or self._true_price is None:
             raise RuntimeError("Missing environment curves. Call reset() before observation.")
 
@@ -748,6 +765,9 @@ class VppEnvironment(Environment):
             grid_voltage_v=230.0,
             grid_connected=self._is_grid_connected(idx),
             market_price_per_mwh=float(self._true_price[idx]),
+            reward=reward,
+            done=done,
+            metadata=metadata or {},
             carbon_credits_balance=round(self._carbon_balance, 4),
             forecast_24h_price=self._true_price.tolist(),
             forecast_24h_solar=self._true_solar.tolist(),
