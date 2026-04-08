@@ -303,11 +303,16 @@ def _post_step(session: requests.Session, action: Dict[str, Any], timeout: int =
     return response
 
 
-def _post_trace(session: requests.Session, action: Dict[str, Any], timeout: int = 15) -> requests.Response:
-    """Fallback step execution using the custom /trace endpoint."""
+def _post_trace(
+    session: requests.Session,
+    action: Dict[str, Any],
+    reasoning: str,
+    timeout: int = 15,
+) -> requests.Response:
+    """Submit a reasoning trace using the custom /trace endpoint."""
     return session.post(
         f"{VPP_SERVER_URL}/trace",
-        params={"reasoning": "inference-fallback"},
+        params={"reasoning": reasoning},
         json=action,
         timeout=timeout,
     )
@@ -357,10 +362,19 @@ def run_episode(task_id: str) -> float:
                 error_msg = str(llm_err)[:100]  # Truncate error message
 
             try:
-                # Try to use /trace endpoint for reasoning traces (optional)
-                # Fall back to /step if /trace doesn't work or isn't available
-                trace_resp = _post_trace(session, action, timeout=15)
-                if trace_resp.status_code < 400:
+                trace_resp = None
+                if action.get("reasoning"):
+                    try:
+                        trace_resp = _post_trace(
+                            session,
+                            action,
+                            reasoning=action["reasoning"],
+                            timeout=15,
+                        )
+                    except Exception:
+                        trace_resp = None
+
+                if trace_resp is not None and trace_resp.status_code < 400:
                     step_resp = trace_resp
                 else:
                     # Fall back to /step on any error (404, 400, 422, etc.)

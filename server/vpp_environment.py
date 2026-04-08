@@ -44,6 +44,7 @@ P2P trading
   Only activates if Zone A has demand to absorb the export.
 """
 
+import contextvars
 import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -63,16 +64,17 @@ from server.task_curves import (
     HIGH_EMISSION_STEPS, DR_BID_INTERVAL, TASK_METADATA, ALL_TASK_IDS,
 )
 
-# Global reference to current environment instance (set by __init__)
-# Note: Multi-concurrent environments share this reference, which works fine for
-# sequential single-session usage. For true multi-session concurrency, use FastAPI's
-# Depends() and request context, or OpenEnv's built-in session management.
-_current_instance: "VppEnvironment | None" = None
+# Request-local reference to the current environment instance.
+# This is safe for async/await and concurrent request handling when the current
+# request uses its own execution context.
+_current_env_var: contextvars.ContextVar["VppEnvironment | None"] = contextvars.ContextVar(
+    "current_vpp_environment", default=None
+)
 
 
 def get_current_env_instance() -> "VppEnvironment | None":
-    """Retrieve the current environment instance."""
-    return _current_instance
+    """Retrieve the current environment instance for this execution context."""
+    return _current_env_var.get()
 
 
 _ZONE_A_START, _ZONE_A_END = 0,  40
@@ -108,8 +110,7 @@ class VppEnvironment(Environment):
     # ── Construction ──────────────────────────────────────────────────────────
 
     def __init__(self):
-        global _current_instance
-        _current_instance = self
+        _current_env_var.set(self)
 
         self.assets: List[BatteryAsset] = [
             BatteryAsset(

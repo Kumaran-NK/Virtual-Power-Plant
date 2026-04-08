@@ -79,3 +79,5 @@ htmlcov/
 openenv_vpp.egg-info
 
 .env
+
+tests/

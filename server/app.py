@@ -59,7 +59,7 @@ def get_current_env() -> VppEnvironment:
     Raises HTTPException if no environment is active.
     """
     env = get_current_env_instance()
-    if env is None or env.state is None:
+    if env is None or env._state is None:
         raise HTTPException(status_code=400, detail="Environment not initialised — call /reset first.")
     return env
 
@@ -150,7 +150,7 @@ async def submit_trace(action: VppAction, reasoning: str = Query(...)):
       - Is the reserve management justified?
     """
     env = get_current_env()
-    if env.state is None:
+    if env._state is None:
         raise HTTPException(status_code=400, detail="Call /reset before /trace.")
 
     # Inject reasoning into action and step
