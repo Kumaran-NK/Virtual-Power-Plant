@@ -115,15 +115,15 @@ p2p_revenue       = p2p_exported_kw × 0.25h × (p2p_price / 1000) [per home]
 
 The environment supports five progressive difficulty tiers:
 
-1. **Easy — Arbitrage** (`easy-arbitrage`) ⭐☆☆☆☆
+1. **Easy — Arbitrage** (`easy-arbitrage`) 
    Ideal conditions (clear sky, low demand, consistent $50/MWh). The objective is straightforward solar surplus arbitrage. *Profit target: $500.*
-2. **Medium — Forecast Error** (`medium-forecast-error`) ⭐⭐☆☆☆
+2. **Medium — Forecast Error** (`medium-forecast-error`) 
    Simulates heatwaves with 4× AC demand spikes between 10:00–14:00 alongside a sinusoidal $35–$65/MWh pricing model. *Profit target: $200.*
-3. **Hard — Frequency Response** (`hard-frequency-response`) ⭐⭐⭐☆☆
+3. **Hard — Frequency Response** (`hard-frequency-response`) 
    Grid frequencies drop to 49.5 Hz, coupled with a 10× price spike at 12:30 (step 26). Immediate discharge is mandated. *Profit target: $1000.*
-4. **Expert — Demand Response** (`expert-demand-response`) ⭐⭐⭐⭐☆
+4. **Expert — Demand Response** (`expert-demand-response`) 
    Demand response bids appear every 6 steps. An adversarial cloud event severely limits solar yield at step 24, forcing agents to balance bid commitments against weather risks. *Profit target: $800.*
-5. **Islanding Emergency** (`islanding-emergency`) ⭐⭐⭐⭐☆
+5. **Islanding Emergency** (`islanding-emergency`) 
    The grid fails at 11:00 (step 20) for 10 consecutive steps. The agent must sustain 100 homes independently until grid reconnection at 13:30 (step 30), which introduces an 8× price spike. *Profit target: $400.*
 
 ---
