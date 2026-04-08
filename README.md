@@ -1,3 +1,14 @@
+---
+title: Virtual Power Plant Orchestrator — Extended Edition
+tags:
+  - fastapi
+  - reinforcement-learning
+  - virtual-power-plant
+  - energy
+  - simulation
+license: mit
+---
+
 # Virtual Power Plant Orchestrator — Extended Edition
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
