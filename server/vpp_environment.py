@@ -44,7 +44,6 @@ P2P trading
   Only activates if Zone A has demand to absorb the export.
 """
 
-import contextvars
 import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -64,17 +63,13 @@ from server.task_curves import (
     HIGH_EMISSION_STEPS, DR_BID_INTERVAL, TASK_METADATA, ALL_TASK_IDS,
 )
 
-# Request-local reference to the current environment instance.
-# This is safe for async/await and concurrent request handling when the current
-# request uses its own execution context.
-_current_env_var: contextvars.ContextVar["VppEnvironment | None"] = contextvars.ContextVar(
-    "current_vpp_environment", default=None
-)
-
-
-def get_current_env_instance() -> "VppEnvironment | None":
-    """Retrieve the current environment instance for this execution context."""
-    return _current_env_var.get()
+# NOTE: contextvars no longer used for session management.
+# OpenEnv's WebSocket endpoint (/ws) handles stateful session management via MCP protocol.
+# HTTP endpoints (/reset, /step) are stateless - use WebSocket for multi-step episodes.
+# Clients should use: from client import VppEnv
+#   with VppEnv(base_url="http://localhost:7860") as client:
+#       result = client.reset(task_id="easy-arbitrage")
+#       result = client.step(action)  # Session persists via WebSocket
 
 
 _ZONE_A_START, _ZONE_A_END = 0,  40
@@ -100,6 +95,9 @@ _DR_FAIL_PENALTY_MULT = 2.0   # 2× the missed revenue
 
 # Islanding blackout penalty per home-step
 _ISLANDING_BLACKOUT_PENALTY = 50.0   # USD per home blackout during islanding
+
+# Score epsilon: minimum deviation from boundaries to ensure open interval (0, 1)
+_SCORE_EPSILON = 0.0001
 
 
 class VppEnvironment(Environment):
@@ -156,9 +154,9 @@ class VppEnvironment(Environment):
         # Reasoning trace storage
         self._reasoning_traces: List[dict] = []
 
-        # Register this instance in the request-local context so reset() and step()
-        # can share state across HTTP requests in the same session.
-        _current_env_var.set(self)
+        # Session management is handled by OpenEnv's /ws endpoint (MCP protocol).
+        # HTTP /reset and /step endpoints are stateless and create fresh instances.
+        # For stateful multi-step episodes, use WebSocket via VppEnv client.
 
     # ── reset ─────────────────────────────────────────────────────────────────
 
@@ -528,11 +526,13 @@ class VppEnvironment(Environment):
         dr_score          = fulfilled / max(1, accepted)
 
         aggregate = 0.50×profit + 0.20×safety + 0.15×carbon + 0.10×degradation + 0.05×dr
+        
+        All scores are clamped to the open interval (0, 1) using epsilon = 0.0001.
         """
         if self._state is None:
             return ParetoScore(
-                profit_score=0.0, safety_score=1.0, carbon_score=0.0,
-                degradation_score=1.0, dr_score=0.0, aggregate_score=0.0,
+                profit_score=0.5, safety_score=0.5, carbon_score=0.5,
+                degradation_score=0.5, dr_score=0.5, aggregate_score=0.5,
                 cumulative_profit_usd=0.0,
                 cumulative_p2p_usd=0.0,
                 cumulative_dr_bonus_usd=0.0,
@@ -551,34 +551,35 @@ class VppEnvironment(Environment):
         goal = meta["profit_target_usd"]
         carbon_target = meta["carbon_target_credits"]
 
-        # Profit
+        # Profit (with epsilon clamping to stay strictly in (0, 1))
         total_profit = self._state.cumulative_profit_usd + \
                        self._state.cumulative_p2p_usd
-        profit_score = float(np.clip(total_profit / max(goal, 1.0), 0.0, 1.0))
+        profit_score = float(np.clip(total_profit / max(goal, 1.0), _SCORE_EPSILON, 1.0 - _SCORE_EPSILON))
 
-        # Safety (violations + emergencies)
+        # Safety (violations + emergencies) (with epsilon clamping)
         violation_ratio   = self._state.safety_violations_count / EPISODE_STEPS
         emergency_ratio   = min(1.0, self._state.grid_emergencies_ignored / max(EPISODE_STEPS, 1))
-        safety_score = max(0.0, 1.0 - violation_ratio * 0.60 - emergency_ratio * 0.40)
+        safety_score = float(np.clip(1.0 - violation_ratio * 0.60 - emergency_ratio * 0.40, _SCORE_EPSILON, 1.0 - _SCORE_EPSILON))
 
-        # Carbon
-        carbon_score = float(np.clip(self._carbon_balance / max(carbon_target, 1.0), 0.0, 1.0))
+        # Carbon (with epsilon clamping)
+        carbon_score = float(np.clip(self._carbon_balance / max(carbon_target, 1.0), _SCORE_EPSILON, 1.0 - _SCORE_EPSILON))
 
-        # Battery degradation (1.0 = no degradation, 0.0 = all at SoH floor)
+        # Battery degradation (1.0 = no degradation, 0.0 = all at SoH floor) (with epsilon clamping)
         normalised_soh = (self._state.mean_state_of_health - _SOH_FLOOR) / (1.0 - _SOH_FLOOR)
-        degradation_score = float(np.clip(normalised_soh, 0.0, 1.0))
+        degradation_score = float(np.clip(normalised_soh, _SCORE_EPSILON, 1.0 - _SCORE_EPSILON))
 
-        # DR participation
+        # DR participation (with epsilon clamping, neutral at 0.5)
         if self._state.dr_bids_accepted > 0:
             dr_score = self._state.dr_bids_fulfilled / self._state.dr_bids_accepted
+            dr_score = float(np.clip(dr_score, _SCORE_EPSILON, 1.0 - _SCORE_EPSILON))
         else:
-            dr_score = 1.0   # no bids → neutral (not penalised)
+            dr_score = 0.5   # no bids → neutral (midpoint)
 
         # Islanding blackout deduction to safety
         if self._state.islanding_blackouts > 0:
-            safety_score = max(0.0, safety_score - min(0.3, self._state.islanding_blackouts * 0.01))
+            safety_score = float(np.clip(safety_score - min(0.3, self._state.islanding_blackouts * 0.01), _SCORE_EPSILON, 1.0 - _SCORE_EPSILON))
 
-        # Weighted aggregate
+        # Weighted aggregate (with epsilon clamping)
         aggregate = (
             0.50 * profit_score
             + 0.20 * safety_score
@@ -586,6 +587,7 @@ class VppEnvironment(Environment):
             + 0.10 * degradation_score
             + 0.05 * dr_score
         )
+        aggregate = float(np.clip(aggregate, _SCORE_EPSILON, 1.0 - _SCORE_EPSILON))
 
         return ParetoScore(
             profit_score=round(profit_score, 4),
@@ -613,11 +615,6 @@ class VppEnvironment(Environment):
 
     def get_pareto_score(self) -> ParetoScore:
         return self._get_pareto_score()
-
-    @classmethod
-    def get_class_score(cls) -> float:
-        env = get_current_env_instance()
-        return env._get_pareto_score().aggregate_score if env and env.state else 0.0
 
     # ── Reasoning traces ─────────────────────────────────────────────────────
 
