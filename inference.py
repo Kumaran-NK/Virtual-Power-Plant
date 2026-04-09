@@ -34,7 +34,7 @@ load_dotenv()
 # Required by submission checklist
 API_BASE_URL   = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME_ENV = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN       = os.getenv("HF_TOKEN")
+HF_TOKEN       = os.getenv("HF_TOKEN") or os.getenv("API_KEY")  # Support both HF_TOKEN and OPENAI_API_KEY for flexibility
 # Optional when using from_docker_image() workflows
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
