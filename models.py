@@ -353,15 +353,15 @@ class ParetoScore(BaseModel):
     Replaces the single scalar in /grader.
     """
 
-    # Component scores (each 0.0–1.0)
-    profit_score:    float = Field(..., ge=0.0, le=1.0, description="Financial performance vs profit target.")
-    safety_score:    float = Field(..., ge=0.0, le=1.0, description="1.0 = zero violations; degrades with violations.")
-    carbon_score:    float = Field(..., ge=0.0, le=1.0, description="Carbon credit balance normalised to target.")
-    degradation_score: float = Field(..., ge=0.0, le=1.0, description="1.0 = zero degradation; degrades with SoH loss.")
-    dr_score:        float = Field(0.0, ge=0.0, le=1.0, description="Demand-response participation quality.")
+    # Component scores (each strictly in the open interval (0.0, 1.0))
+    profit_score:    float = Field(..., gt=0.0, lt=1.0, description="Financial performance vs profit target.")
+    safety_score:    float = Field(..., gt=0.0, lt=1.0, description="1.0 = zero violations; degrades with violations.")
+    carbon_score:    float = Field(..., gt=0.0, lt=1.0, description="Carbon credit balance normalised to target.")
+    degradation_score: float = Field(..., gt=0.0, lt=1.0, description="1.0 = zero degradation; degrades with SoH loss.")
+    dr_score:        float = Field(0.5, gt=0.0, lt=1.0, description="Demand-response participation quality.")
 
     # Weighted aggregate (replaces old scalar `score`)
-    aggregate_score: float = Field(..., ge=0.0, le=1.0,
+    aggregate_score: float = Field(..., gt=0.0, lt=1.0,
         description="Weighted sum: 0.50×profit + 0.20×safety + 0.15×carbon + 0.10×degradation + 0.05×dr")
 
     # Detail
