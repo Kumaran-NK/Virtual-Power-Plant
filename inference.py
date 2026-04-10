@@ -38,7 +38,7 @@ HF_TOKEN       = os.getenv("HF_TOKEN") or os.getenv("API_KEY")  # Support both H
 # Optional when using from_docker_image() workflows
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-VPP_SERVER_URL = os.getenv("VPP_SERVER_URL", "http://localhost:7860")
+VPP_SERVER_URL = os.getenv("VPP_SERVER_URL", "http://localhost:8000")
 
 BENCHMARK = "vpp"
 MAX_STEPS = 48

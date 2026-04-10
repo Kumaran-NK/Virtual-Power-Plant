@@ -67,7 +67,7 @@ from server.task_curves import (
 # OpenEnv's WebSocket endpoint (/ws) handles stateful session management via MCP protocol.
 # HTTP endpoints (/reset, /step) are stateless - use WebSocket for multi-step episodes.
 # Clients should use: from client import VppEnv
-#   with VppEnv(base_url="http://localhost:7860") as client:
+#   with VppEnv(base_url="http://localhost:8000") as client:
 #       result = client.reset(task_id="easy-arbitrage")
 #       result = client.step(action)  # Session persists via WebSocket
 

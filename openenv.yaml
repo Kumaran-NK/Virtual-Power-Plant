@@ -5,32 +5,74 @@ description: >
   Manage 100 home batteries in a simulated neighbourhood to maximize grid
   profit while maintaining safety constraints. One step = 15 minutes.
   48 steps = 12-hour episode. Two home zones (Zone A standard, Zone B with EVs).
+version: "1.0.0"
+author: "Virtual Power Plant Team"
+
+observation_space:
+  type: text
+  description: >
+    Structured JSON observation containing battery states, market prices,
+    solar forecasts, demand curves, grid status, carbon credits, and
+    P2P energy trading opportunities.
+
+action_space:
+  type: discrete
+  actions:
+    - charge_battery
+    - discharge_battery
+    - defer_ev_charging
+    - accept_dr_bid
+    - p2p_export_rate
+  description: >
+    Control 100 home batteries and manage demand response. Each action
+    is a complex multi-dimensional control across the fleet.
+
+endpoints:
+  health: /health
+  reset: /reset
+  step: /step
+  state: /state
 
 tasks:
   - id: "easy-arbitrage"
     description: "High solar, low demand, flat $50/MWh price. Sell surplus. Profit target $250."
     difficulty: easy
+    steps: 48
+    ideal_action: discharge_battery
 
   - id: "medium-forecast-error"
     description: "Heatwave: 4× AC demand spike 10:00–14:00. Sinusoidal pricing. Profit target $100."
     difficulty: medium
+    steps: 48
+    ideal_action: charge_battery
 
   - id: "hard-frequency-response"
     description: "Grid stress: 10× price spike + frequency emergency at step 26 (12:30). Profit target $500."
     difficulty: hard
+    steps: 48
+    ideal_action: discharge_battery
 
   - id: "expert-demand-response"
     description: "DR auctions every 6 steps with premium multipliers and adversarial cloud disruption. Profit target $800."
     difficulty: expert
+    steps: 48
+    ideal_action: accept_dr_bid
 
   - id: "islanding-emergency"
     description: "Grid disconnect between steps 20-29. Preserve home power and exploit reconnection spike. Profit target $400."
     difficulty: hard
+    steps: 48
+    ideal_action: charge_battery
 
-type: space
-runtime: fastapi
-app: server.app:app
-port: 7860
+scoring:
+  reward_range: [0.0, 1.0]
+  success_threshold: 0.5
+  score_formula: "pareto_score(profit=50%, safety=20%, carbon=15%, degradation=10%, dr_participation=5%)"
+
+constraints:
+  max_runtime_seconds: 1200
+  max_memory_gb: 8
+  max_vcpu: 2
 
 tags:
   - energy

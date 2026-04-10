@@ -23,7 +23,7 @@ class VppEnv(EnvClient[VppAction, VppObservation, VppState]):
     Maintains a persistent connection and provides typed step()/reset().
 
     Example:
-        with VppEnv(base_url="http://localhost:7860") as client:
+        with VppEnv(base_url="http://localhost:8000") as client:
             result = client.reset(task_id="easy-arbitrage")
             obs = result.observation
             print(obs.market_price_per_mwh)
