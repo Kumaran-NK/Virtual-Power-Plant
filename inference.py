@@ -42,6 +42,7 @@ VPP_SERVER_URL = os.getenv("VPP_SERVER_URL", "http://localhost:7860")
 
 BENCHMARK = "vpp"
 MAX_STEPS = 48
+SCORE_EPSILON = 1e-4
 
 # ---------------------------------------------------------------------------
 # LLM client setup (auto‑detect provider)
@@ -318,6 +319,15 @@ def _post_trace(
     )
 
 
+def _strict_open_unit_interval(value: float) -> float:
+    """Clamp score to strict open interval (0, 1)."""
+    if value <= SCORE_EPSILON:
+        return SCORE_EPSILON
+    if value >= 1.0 - SCORE_EPSILON:
+        return 1.0 - SCORE_EPSILON
+    return value
+
+
 def run_episode(task_id: str) -> float:
     """
     Run one full episode and emit strict [START]/[STEP]/[END] format to stdout.
@@ -391,14 +401,25 @@ def run_episode(task_id: str) -> float:
                 rewards.append(reward)
                 step += 1
 
+                info_obj = data.get("info") if isinstance(data, dict) else None
+                if not isinstance(info_obj, dict):
+                    info_obj = {}
+                metadata_obj = obs.get("metadata") if isinstance(obs, dict) else None
+                if not isinstance(metadata_obj, dict):
+                    metadata_obj = {}
+                pareto_obj = metadata_obj.get("pareto_score")
+                if not isinstance(pareto_obj, dict):
+                    pareto_obj = info_obj.get("pareto_score")
+                if isinstance(pareto_obj, dict):
+                    agg = pareto_obj.get("aggregate_score")
+                    if isinstance(agg, (int, float)):
+                        score = _strict_open_unit_interval(float(agg))
+
                 # Prefer raw environment last_action_error when present.
                 last_action_error = None
-                if isinstance(data, dict):
-                    info_obj = data.get("info")
-                    if isinstance(info_obj, dict):
-                        raw_err = info_obj.get("last_action_error")
-                        if raw_err not in (None, ""):
-                            last_action_error = str(raw_err)
+                raw_err = info_obj.get("last_action_error")
+                if raw_err not in (None, ""):
+                    last_action_error = str(raw_err)
                 
                 # [STEP] line — exactly one line to stdout, compact JSON action
                 action_json = json.dumps(action, separators=(",", ":"), sort_keys=True)
@@ -424,23 +445,20 @@ def run_episode(task_id: str) -> float:
                 sys.stdout.flush()
                 break
 
-        # Retrieve final grader score
-        try:
-            grader_resp = session.get(f"{VPP_SERVER_URL}/grader", timeout=10)
-            grader_data = grader_resp.json()
-            score = float(grader_data.get("aggregate_score", 0.0))
-            success = done and score > 0.0
-        except Exception as grader_err:
-            print(f"[WARNING] Could not fetch grader: {grader_err}", file=sys.stderr)
-            score = 0.0
-            success = False
+        if score <= 0.0:
+            # Safety fallback for environments that don't emit pareto metadata.
+            if rewards:
+                positive = sum(1 for r in rewards if r > 0)
+                score = _strict_open_unit_interval(positive / len(rewards))
+            else:
+                score = SCORE_EPSILON
+        success = done and score > 0.0
 
     except Exception as outer_err:
         # [END] line even on failure
         rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-        sys.stdout.write(
-            f"[END] success=false steps={step} score=0.00 rewards={rewards_str}\n"
-        )
+        failure_score = f"{SCORE_EPSILON:.4f}"
+        sys.stdout.write(f"[END] success=false steps={step} score={failure_score} rewards={rewards_str}\n")
         sys.stdout.flush()
         print(f"[ERROR] Episode failed: {outer_err}", file=sys.stderr)
         session.close()
@@ -448,9 +466,8 @@ def run_episode(task_id: str) -> float:
 
     # [END] line — exactly one line to stdout, completed episode
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    sys.stdout.write(
-        f"[END] success={str(success).lower()} steps={step} score={score:.2f} rewards={rewards_str}\n"
-    )
+    output_score = _strict_open_unit_interval(score)
+    sys.stdout.write(f"[END] success={str(success).lower()} steps={step} score={output_score:.4f} rewards={rewards_str}\n")
     sys.stdout.flush()
     
     session.close()

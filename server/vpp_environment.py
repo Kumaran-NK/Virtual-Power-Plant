@@ -506,6 +506,7 @@ class VppEnvironment(Environment):
             "islanding_blackout_homes":   islanding_blackout_homes,
             "new_dr_bid_accepted":        new_dr_bid_accepted,
         }
+        info["pareto_score"] = self._get_pareto_score().model_dump()
         obs = self._build_observation(
             reward=round(reward, 6),
             done=done,

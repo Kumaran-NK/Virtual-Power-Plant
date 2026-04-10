@@ -117,18 +117,15 @@ async def get_grader_score():
       + weighted aggregate_score in [0.0, 1.0]
     Weights: 0.50 profit | 0.20 safety | 0.15 carbon | 0.10 degradation | 0.05 DR
     """
-    # HTTP requests don't have stateful sessions - no active environment
-    return {
-        "aggregate_score": 0.5,
-        "score": 0.5,
-        "profit_score": 0.5,
-        "safety_score": 0.5,
-        "carbon_score": 0.5,
-        "degradation_score": 0.5,
-        "dr_score": 0.5,
-        "detail": "No active episode. Use WebSocket client (VppEnv) for stateful operations. HTTP POST endpoints are stateless.",
-        "note": "from client import VppEnv; client = VppEnv(base_url='http://localhost:7860')"
-    }
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "No active HTTP episode state available for /grader. "
+            "This OpenEnv server version uses stateless HTTP /reset and /step; "
+            "use the WebSocket client (VppEnv) for session-scoped grading, "
+            "or consume per-step pareto metadata emitted in observations."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
