@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ---
 title: Virtual Power Plant Orchestrator — Extended Edition
 emoji: ⚡
@@ -18,6 +19,10 @@ license: mit
 
 # Virtual Power Plant Orchestrator — Extended Edition
 
+=======
+# Virtual Power Plant Orchestrator — Extended Edition
+
+>>>>>>> parent of 05c9567 (Update server configuration and enhance environment specifications)
 > **OpenEnv environment** — an AI agent manages 100 home batteries in a simulated neighbourhood to maximise a **multi-objective Pareto score** across five difficulty tiers, incorporating battery degradation, carbon credits, P2P trading, demand-response auctions, and grid islanding emergencies.
 
 ---
@@ -45,19 +50,19 @@ license: mit
 
 Clone the repository and install the required dependencies:
 
-### Install
-
 ```bash
-# Clone the repo
-git clone <your-repo>
-cd Virtual-Power-Plant
+# 1. Install
+git clone https://huggingface.co/spaces/<your-username>/vpp-env
+cd vpp-env
+pip install -r requirements.txt
 
-# Install dependencies (requires Python 3.10+)
-uv sync
+# 2. Start the server
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 
-# Or: pip install -e .
-```
+# 3. Run the rule-based baseline (no API key)
+python baseline_inference.py --agent rule
 
+<<<<<<< HEAD
 ### Run the Server
 
 ```bash
@@ -81,6 +86,8 @@ uvicorn server.app:app --host 0.0.0.0 --port 7860
 # 3. Run the rule-based baseline (no API key)
 python baseline_inference.py --agent rule
 
+=======
+>>>>>>> parent of 05c9567 (Update server configuration and enhance environment specifications)
 # 4. Run the LLM agent
 export API_BASE_URL=https://router.huggingface.co/v1
 export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct

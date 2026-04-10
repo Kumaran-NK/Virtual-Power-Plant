@@ -70,8 +70,8 @@ COPY --from=builder /app/env /app/env
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
-# Expose the standard OpenEnv port
-EXPOSE 8000
+# Expose the Hugging Face Spaces default port
+EXPOSE 7860
 
 # Docker HEALTHCHECK — polls /health every 30 s
 # The /health endpoint is defined in server/app.py
@@ -80,7 +80,7 @@ HEALTHCHECK \
     --timeout=5s \
     --start-period=15s \
     --retries=3 \
-    CMD curl -sf http://localhost:8000/health || exit 1
+    CMD curl -sf http://localhost:7860/health || exit 1
 
 # Start the FastAPI server
-CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 7860"]
