@@ -17,6 +17,7 @@ It supports OpenAI only.
 
 import asyncio
 import json
+import math
 import os
 import re
 import sys
@@ -288,11 +289,13 @@ def _observation_to_dict(observation: Any) -> Dict[str, Any]:
 
 def _strict_open_unit_interval(value: float) -> float:
     """Clamp score to strict open interval (0, 1)."""
+    if not math.isfinite(value):
+        return SCORE_EPSILON
     if value <= SCORE_EPSILON:
         return SCORE_EPSILON
     if value >= 1.0 - SCORE_EPSILON:
         return 1.0 - SCORE_EPSILON
-    return value
+    return float(value)
 
 
 def _ensure_env_instance(env_instance: VppEnv | Coroutine[Any, Any, VppEnv]) -> VppEnv:
@@ -410,14 +413,14 @@ def run_episode(task_id: str) -> float:
         sys.stdout.write(f"[END] success=false steps={step} score={failure_score} rewards={rewards_str}\n")
         sys.stdout.flush()
         print(f"[ERROR] Episode failed: {outer_err}", file=sys.stderr)
-        return 0.0
+        return SCORE_EPSILON
 
     # [END] line — exactly one line to stdout, completed episode
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     output_score = _strict_open_unit_interval(score)
     sys.stdout.write(f"[END] success={str(success).lower()} steps={step} score={output_score:.4f} rewards={rewards_str}\n")
     sys.stdout.flush()
-    return score
+    return output_score
 
 
 def _wait_for_server(timeout: int = 30) -> bool:
