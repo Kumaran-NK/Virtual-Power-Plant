@@ -17,14 +17,13 @@ dependencies = [
     # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
     # install from github
     # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
-    "openenv-core[core]>=0.2.2",
+    "openenv-core[core]>=0.2.1",
     "fastapi>=0.115.0",
     "pydantic>=2.0.0",
     "uvicorn>=0.24.0",
     "requests>=2.31.0",
     # Environment-specific dependencies
     "openai>=1.0.0",
-    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -46,5 +45,9 @@ py-modules = [
     "models",
     "client",
     "inference",
+    "baseline_inference",
     "validate",
+    "gymwrapper",
+    "train_rl",
+    "demo",
 ]

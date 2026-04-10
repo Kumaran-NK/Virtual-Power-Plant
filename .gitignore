@@ -1,57 +1,47 @@
-# --- Secrets ---
-.env
-*.pem
-*.key
-
-# --- Python ---
+# =========================
+# Python basics
+# =========================
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-*.whl
+*$py.class
 
-# --- Virtual environments ---
-.venv/
+# =========================
+# Virtual environments
+# =========================
 venv/
+.venv/
 env/
+ENV/
 
-# --- uv ---
-uv.lock
+# =========================
+# Environment variables
+# =========================
+.env
 
-# --- Pytest / Coverage ---
-.pytest_cache/
-.coverage
-htmlcov/
-coverage.xml
+# =========================
+# Build / packaging
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
 
-# --- Jupyter ---
-.ipynb_checkpoints/
-*.ipynb
-
-# --- Docker ---
-*.dockerignore
-
-# --- macOS ---
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# --- IDE ---
+# =========================
+# IDE / Editor files
+# =========================
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# --- Logs ---
+# =========================
+# Logs
+# =========================
 *.log
-logs/
 
-# --- RL / ML artifacts ---
+# =========================
+# RL / ML artifacts (IMPORTANT)
+# =========================
 checkpoints/
 vpp_tensorboard/
 *.pt
@@ -60,16 +50,29 @@ vpp_tensorboard/
 *.h5
 *.zip
 
-# --- Episode outputs (keep folder, ignore generated files) ---
-outputs/*
-!outputs/.gitkeep
-internal/*
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
 
-# --- Keep required files ---
+# =========================
+# Testing
+# =========================
+.pytest_cache/
+pytest_*.txt
+.coverage
+htmlcov/
+.tox/
+
+# =========================
+# Keep required files
+# =========================
 !baseline_scores.json
-
 .agents
 .claude
 .codex
-.research
-.tests
+openenv_vpp.egg-info
+.env
+.tests/
+.research/
