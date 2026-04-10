@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
 ---
 title: Virtual Power Plant Orchestrator — Extended Edition
 emoji: ⚡
@@ -20,14 +18,6 @@ license: mit
 
 # Virtual Power Plant Orchestrator — Extended Edition
 
-=======
-# Virtual Power Plant Orchestrator — Extended Edition
-
->>>>>>> parent of 05c9567 (Update server configuration and enhance environment specifications)
-=======
-# Virtual Power Plant Orchestrator — Extended Edition
-
->>>>>>> parent of 05c9567 (Update server configuration and enhance environment specifications)
 > **OpenEnv environment** — an AI agent manages 100 home batteries in a simulated neighbourhood to maximise a **multi-objective Pareto score** across five difficulty tiers, incorporating battery degradation, carbon credits, P2P trading, demand-response auctions, and grid islanding emergencies.
 
 ---
@@ -51,13 +41,11 @@ license: mit
 
 ## Quick Start Guide
 
-<<<<<<< HEAD
 ### 1. Installation
 
 Clone the repository and install the required dependencies:
 
 =======
->>>>>>> parent of 05c9567 (Update server configuration and enhance environment specifications)
 ```bash
 # 1. Install
 git clone https://huggingface.co/spaces/<your-username>/vpp-env
