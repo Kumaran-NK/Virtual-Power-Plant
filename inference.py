@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from openai import OpenAI
+from client import VppEnv
+from models import VppAction
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -274,49 +276,13 @@ def get_llm_action(obs: dict, task_id: str) -> Dict[str, Any]:
     return _rule_agent(obs, task_id)
 
 
-def _extract_observation(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalise API responses that may wrap observations under an 'observation' key."""
-    if isinstance(payload, dict) and isinstance(payload.get("observation"), dict):
-        return payload["observation"]
-    return payload if isinstance(payload, dict) else {}
-
-
-def _post_step(session: requests.Session, action: Dict[str, Any], timeout: int = 15) -> requests.Response:
-    """Post one step action with compatibility for wrapped and flat request schemas."""
-    # OpenEnv create_app expects a wrapped payload: {"action": {...}}
-    response = session.post(f"{VPP_SERVER_URL}/step", json={"action": action}, timeout=timeout)
-    if response.status_code != 422:
-        return response
-
-    # Backward compatibility for servers that expect a flat action body
-    try:
-        detail = response.json().get("detail", [])
-    except Exception:
-        return response
-
-    expects_flat_body = any(
-        isinstance(item, dict) and item.get("loc") == ["body", "global_charge_rate"]
-        for item in detail
-    )
-    if expects_flat_body:
-        return session.post(f"{VPP_SERVER_URL}/step", json=action, timeout=timeout)
-
-    return response
-
-
-def _post_trace(
-    session: requests.Session,
-    action: Dict[str, Any],
-    reasoning: str,
-    timeout: int = 15,
-) -> requests.Response:
-    """Submit a reasoning trace using the custom /trace endpoint."""
-    return session.post(
-        f"{VPP_SERVER_URL}/trace",
-        params={"reasoning": reasoning},
-        json=action,
-        timeout=timeout,
-    )
+def _observation_to_dict(observation: Any) -> Dict[str, Any]:
+    if isinstance(observation, dict):
+        return observation
+    if hasattr(observation, "model_dump"):
+        data = observation.model_dump()
+        return data if isinstance(data, dict) else {}
+    return {}
 
 
 def _strict_open_unit_interval(value: float) -> float:
@@ -338,7 +304,6 @@ def run_episode(task_id: str) -> float:
       [STEP] step=<int> action=<json_compact> reward=<0.00> done=<true|false> error=<null|msg>
       [END] success=<true|false> steps=<int> score=<0.00> rewards=<0.00,0.00,...>
     """
-    session = requests.Session()
     step = 0
     rewards: List[float] = []
     done = False
@@ -346,104 +311,81 @@ def run_episode(task_id: str) -> float:
     score = 0.0
 
     try:
-        # Wait for server readiness before printing START
-        resp = session.post(f"{VPP_SERVER_URL}/reset", params={"task_id": task_id}, timeout=15)
-        resp.raise_for_status()
-        obs = _extract_observation(resp.json())
-
-        # [START] line — exactly one line to stdout, nothing else
         sys.stdout.write(f"[START] task={task_id} env={BENCHMARK} model={DEFAULT_MODEL}\n")
         sys.stdout.flush()
 
-        while not done and step < MAX_STEPS:
-            error_msg = None  # None means "null" in output; str means error message
-            action = {
-                "global_charge_rate": 0.0,
-                "min_reserve_pct": 0.2,
-                "defer_ev_charging": 0.0,
-                "accept_dr_bid": False,
-                "p2p_export_rate": 0.0,
-            }
-            
-            try:
-                action = get_llm_action(obs, task_id)
-            except Exception as llm_err:
-                action = _rule_agent(obs, task_id)
-                error_msg = str(llm_err)
+        env_instance = (
+            VppEnv.from_docker_image(LOCAL_IMAGE_NAME, task=task_id)
+            if LOCAL_IMAGE_NAME
+            else VppEnv(base_url=VPP_SERVER_URL)
+        )
 
-            try:
-                trace_resp = None
-                if action.get("reasoning"):
-                    try:
-                        trace_resp = _post_trace(
-                            session,
-                            action,
-                            reasoning=action["reasoning"],
-                            timeout=15,
-                        )
-                    except Exception:
-                        trace_resp = None
+        with env_instance.sync() as env:
+            result = env.reset() if LOCAL_IMAGE_NAME else env.reset(task_id=task_id)
+            obs = _observation_to_dict(result.observation)
+            done = bool(result.done)
 
-                if trace_resp is not None and trace_resp.status_code < 400:
-                    step_resp = trace_resp
-                else:
-                    # Fall back to /step on any error (404, 400, 422, etc.)
-                    step_resp = _post_step(session, action, timeout=15)
-                    if step_resp.status_code >= 400:
-                        raise requests.HTTPError(
-                            f"step={step_resp.status_code} {step_resp.reason}"
-                        )
-                
-                data = step_resp.json()
-                obs = _extract_observation(data)
-                reward = float(data["reward"])
-                done = bool(data["done"])
-                rewards.append(reward)
-                step += 1
+            while not done and step < MAX_STEPS:
+                error_msg = None
+                action_data = {
+                    "global_charge_rate": 0.0,
+                    "min_reserve_pct": 0.2,
+                    "defer_ev_charging": 0.0,
+                    "accept_dr_bid": False,
+                    "p2p_export_rate": 0.0,
+                }
 
-                info_obj = data.get("info") if isinstance(data, dict) else None
-                if not isinstance(info_obj, dict):
-                    info_obj = {}
-                metadata_obj = obs.get("metadata") if isinstance(obs, dict) else None
-                if not isinstance(metadata_obj, dict):
-                    metadata_obj = {}
-                pareto_obj = metadata_obj.get("pareto_score")
-                if not isinstance(pareto_obj, dict):
-                    pareto_obj = info_obj.get("pareto_score")
-                if isinstance(pareto_obj, dict):
-                    agg = pareto_obj.get("aggregate_score")
-                    if isinstance(agg, (int, float)):
-                        score = _strict_open_unit_interval(float(agg))
+                try:
+                    action_data = get_llm_action(obs, task_id)
+                except Exception as llm_err:
+                    action_data = _rule_agent(obs, task_id)
+                    error_msg = str(llm_err)
 
-                # Prefer raw environment last_action_error when present.
-                last_action_error = None
-                raw_err = info_obj.get("last_action_error")
-                if raw_err not in (None, ""):
-                    last_action_error = str(raw_err)
-                
-                # [STEP] line — exactly one line to stdout, compact JSON action
-                action_json = json.dumps(action, separators=(",", ":"), sort_keys=True)
-                effective_error = last_action_error if last_action_error is not None else error_msg
-                error_str = "null" if effective_error is None else str(effective_error).replace("\n", " ")
-                sys.stdout.write(
-                    f"[STEP] step={step} action={action_json} "
-                    f"reward={reward:.2f} done={str(done).lower()} error={error_str}\n"
-                )
-                sys.stdout.flush()
-                
-            except Exception as step_err:
-                rewards.append(0.0)
-                step += 1
-                
-                # [STEP] line on error
-                action_json = json.dumps(action, separators=(",", ":"), sort_keys=True)
-                error_str = str(step_err)[:100].replace("\n", " ")
-                sys.stdout.write(
-                    f"[STEP] step={step} action={action_json} "
-                    f"reward=0.00 done=false error={error_str}\n"
-                )
-                sys.stdout.flush()
-                break
+                try:
+                    action_model = VppAction(**action_data)
+                    result = env.step(action_model)
+                    reward = float(result.reward or 0.0)
+                    done = bool(result.done)
+                    obs = _observation_to_dict(result.observation)
+                    rewards.append(reward)
+                    step += 1
+
+                    metadata_obj = obs.get("metadata") if isinstance(obs, dict) else None
+                    if not isinstance(metadata_obj, dict):
+                        metadata_obj = {}
+
+                    pareto_obj = metadata_obj.get("pareto_score")
+                    if isinstance(pareto_obj, dict):
+                        agg = pareto_obj.get("aggregate_score")
+                        if isinstance(agg, (int, float)):
+                            score = _strict_open_unit_interval(float(agg))
+
+                    last_action_error = metadata_obj.get("last_action_error")
+                    effective_error = (
+                        str(last_action_error)
+                        if last_action_error not in (None, "")
+                        else error_msg
+                    )
+
+                    action_json = json.dumps(action_data, separators=(",", ":"), sort_keys=True)
+                    error_str = "null" if effective_error is None else str(effective_error).replace("\n", " ")
+                    sys.stdout.write(
+                        f"[STEP] step={step} action={action_json} "
+                        f"reward={reward:.2f} done={str(done).lower()} error={error_str}\n"
+                    )
+                    sys.stdout.flush()
+
+                except Exception as step_err:
+                    rewards.append(0.0)
+                    step += 1
+                    action_json = json.dumps(action_data, separators=(",", ":"), sort_keys=True)
+                    error_str = str(step_err)[:100].replace("\n", " ")
+                    sys.stdout.write(
+                        f"[STEP] step={step} action={action_json} "
+                        f"reward=0.00 done=false error={error_str}\n"
+                    )
+                    sys.stdout.flush()
+                    break
 
         if score <= 0.0:
             # Safety fallback for environments that don't emit pareto metadata.
@@ -461,7 +403,6 @@ def run_episode(task_id: str) -> float:
         sys.stdout.write(f"[END] success=false steps={step} score={failure_score} rewards={rewards_str}\n")
         sys.stdout.flush()
         print(f"[ERROR] Episode failed: {outer_err}", file=sys.stderr)
-        session.close()
         return 0.0
 
     # [END] line — exactly one line to stdout, completed episode
@@ -469,8 +410,6 @@ def run_episode(task_id: str) -> float:
     output_score = _strict_open_unit_interval(score)
     sys.stdout.write(f"[END] success={str(success).lower()} steps={step} score={output_score:.4f} rewards={rewards_str}\n")
     sys.stdout.flush()
-    
-    session.close()
     return score
 
 
