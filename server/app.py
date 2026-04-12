@@ -57,6 +57,7 @@ _baseline_running = False
 _baseline_result  = None
 _baseline_error: Optional[str] = None
 _baseline_task: Optional[asyncio.Task] = None
+_baseline_proc: Optional[subprocess.Popen] = None
 
 _PARETO_WEIGHTS = {
     "profit": 0.50,
@@ -94,8 +95,27 @@ def _resolve_server_url() -> str:
     host = os.getenv("HOST", "127.0.0.1")
     if host in {"0.0.0.0", "::"}:
         host = "127.0.0.1"
+    elif ":" in host and not host.startswith("["):
+        # Bracket IPv6 literals so URL parsing stays valid (e.g., http://[::1]:7860).
+        host = f"[{host}]"
     port = os.getenv("PORT", "7860")
     return f"http://{host}:{port}"
+
+
+def _write_json_atomic(path: str, payload: dict) -> None:
+    """Atomically persist JSON so readers never observe truncated content."""
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 # ---------------------------------------------------------------------------
 # IMPORTANT: Custom endpoints usage
@@ -276,27 +296,44 @@ async def get_traces():
 
 def _run_baseline_subprocess() -> None:
     """Trigger baseline_inference.py and store results in shared state."""
-    global _baseline_result, _baseline_running, _baseline_error
+    global _baseline_result, _baseline_running, _baseline_error, _baseline_proc
 
     baseline_script = os.path.join(os.path.dirname(__file__), "..", "baseline_inference.py")
     baseline_script = os.path.abspath(baseline_script)
     env_vars = {**os.environ, "VPP_SERVER_URL": _resolve_server_url()}
+    proc: Optional[subprocess.Popen] = None
 
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, baseline_script, "--json-only"],
-            capture_output=True, text=True, timeout=300, env=env_vars,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env_vars,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            scores = json.loads(result.stdout.strip())
+        with _baseline_lock:
+            _baseline_proc = proc
+
+        try:
+            stdout, stderr = proc.communicate(timeout=300)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            proc.communicate()
+            with _baseline_lock:
+                _baseline_error = "Baseline computation timed out (>300 s)."
+            return
+
+        if proc.returncode == 0 and stdout.strip():
+            scores = json.loads(stdout.strip())
             out_path = _baseline_scores_path()
             try:
-                with open(out_path, "w", encoding="utf-8") as f:
-                    json.dump(scores, f, indent=2)
+                _write_json_atomic(out_path, scores)
             except OSError:
                 fallback_path = _fallback_baseline_scores_path()
-                with open(fallback_path, "w", encoding="utf-8") as f:
-                    json.dump(scores, f, indent=2)
+                _write_json_atomic(fallback_path, scores)
             with _baseline_lock:
                 _baseline_result = scores
                 _baseline_error = None
@@ -304,11 +341,8 @@ def _run_baseline_subprocess() -> None:
             with _baseline_lock:
                 _baseline_error = (
                     f"Baseline script returned non-zero exit code. "
-                    f"Details: {(result.stderr or '')[:500]}"
+                    f"Details: {(stderr or '')[:500]}"
                 )
-    except subprocess.TimeoutExpired:
-        with _baseline_lock:
-            _baseline_error = "Baseline computation timed out (>300 s)."
     except json.JSONDecodeError as e:
         with _baseline_lock:
             _baseline_error = f"Could not parse baseline output: {e}"
@@ -317,6 +351,8 @@ def _run_baseline_subprocess() -> None:
             _baseline_error = str(e)
     finally:
         with _baseline_lock:
+            if _baseline_proc is proc:
+                _baseline_proc = None
             _baseline_running = False
 
 
@@ -331,15 +367,36 @@ async def _run_baseline_subprocess_async() -> None:
 
 async def _cancel_baseline_task_if_running() -> None:
     """Cancel and await any in-flight baseline background task."""
-    global _baseline_task
+    global _baseline_task, _baseline_proc, _baseline_running
 
     task_to_cancel: Optional[asyncio.Task] = None
+    proc_to_cancel: Optional[subprocess.Popen] = None
     with _baseline_lock:
         if _baseline_task is not None and not _baseline_task.done():
             task_to_cancel = _baseline_task
+        proc_to_cancel = _baseline_proc
 
     if task_to_cancel is not None:
         task_to_cancel.cancel()
+
+    if proc_to_cancel is not None and proc_to_cancel.poll() is None:
+        try:
+            proc_to_cancel.terminate()
+        except OSError:
+            pass
+        try:
+            proc_to_cancel.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc_to_cancel.kill()
+            except OSError:
+                pass
+            try:
+                proc_to_cancel.wait(timeout=5)
+            except Exception:
+                pass
+
+    if task_to_cancel is not None:
         try:
             await task_to_cancel
         except asyncio.CancelledError:
@@ -348,6 +405,10 @@ async def _cancel_baseline_task_if_running() -> None:
     with _baseline_lock:
         if _baseline_task is task_to_cancel:
             _baseline_task = None
+        if _baseline_proc is proc_to_cancel:
+            _baseline_proc = None
+        if _baseline_task is None and _baseline_proc is None:
+            _baseline_running = False
 
 
 _openenv_lifespan_context = app.router.lifespan_context
@@ -410,29 +471,43 @@ async def get_baseline(
         baseline_error = _baseline_error
 
     baseline_path = _baseline_scores_path()
+    fallback_path = _fallback_baseline_scores_path()
+    primary_decode_error: Optional[json.JSONDecodeError] = None
+
     try:
         with open(baseline_path, "r", encoding="utf-8") as f:
             scores = json.load(f)
         with _baseline_lock:
             _baseline_result = scores
         return scores
-    except FileNotFoundError:
-        fallback_path = _fallback_baseline_scores_path()
-        if fallback_path != baseline_path and os.path.exists(fallback_path):
-            try:
-                with open(fallback_path, "r", encoding="utf-8") as f:
-                    scores = json.load(f)
-                with _baseline_lock:
-                    _baseline_result = scores
-                return scores
-            except json.JSONDecodeError as e:
-                raise HTTPException(status_code=500, detail=f"Invalid fallback baseline score file: {e}") from e
-        if baseline_error:
-            return JSONResponse(status_code=500, content={"error": baseline_error})
-        empty = {tid: {"aggregate_score": 0.0, "note": "Run baseline_inference.py"} for tid in ALL_TASK_IDS}
-        return empty
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Invalid baseline score file: {e}") from e
+        primary_decode_error = e
+    except FileNotFoundError:
+        pass
+
+    if fallback_path != baseline_path and os.path.exists(fallback_path):
+        try:
+            with open(fallback_path, "r", encoding="utf-8") as f:
+                scores = json.load(f)
+            with _baseline_lock:
+                _baseline_result = scores
+            return scores
+        except json.JSONDecodeError as e:
+            if primary_decode_error is not None:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid baseline score files: primary={primary_decode_error}; fallback={e}",
+                ) from e
+            raise HTTPException(status_code=500, detail=f"Invalid fallback baseline score file: {e}") from e
+
+    if baseline_error:
+        return JSONResponse(status_code=500, content={"error": baseline_error})
+
+    if primary_decode_error is not None:
+        raise HTTPException(status_code=500, detail=f"Invalid baseline score file: {primary_decode_error}") from primary_decode_error
+
+    empty = {tid: {"aggregate_score": 0.0, "note": "Run baseline_inference.py"} for tid in ALL_TASK_IDS}
+    return empty
 
 
 
