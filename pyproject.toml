@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 name = "openenv-vpp"
 version = "0.1.0"
 description = "Vpp environment for OpenEnv"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
     # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
     # install from github
