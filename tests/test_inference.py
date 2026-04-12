@@ -41,7 +41,7 @@ MODEL_NAME_ENV = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN       = os.getenv("HF_TOKEN") or os.getenv("API_KEY")  # Support both HF_TOKEN and API_KEY for convenience
 # Optional when using from_docker_image() workflows
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
-
+GROQ = os.getenv("GROQ_API_KEY")
 VPP_SERVER_URL = os.getenv("VPP_SERVER_URL", "http://localhost:7860")
 
 BENCHMARK = "vpp"
@@ -62,6 +62,11 @@ if HF_TOKEN:
     DEFAULT_MODEL = MODEL_NAME_ENV
     USE_LLM = True
     print(f"[INFO] Using OpenAI client with model: {DEFAULT_MODEL}", file=sys.stderr)
+elif GROQ:
+    client = OpenAI(api_key=GROQ, base_url="https://api.groq.com/openai/v1", max_retries=0)
+    DEFAULT_MODEL = MODEL_NAME_ENV  
+    USE_LLM = True
+    print(f"[INFO] Using Groq client with model: {DEFAULT_MODEL}", file=sys.stderr)
 else:
     USE_LLM = False
     DEFAULT_MODEL = "rule-based-smart-agent-v2"
@@ -244,17 +249,14 @@ def get_llm_action(obs: dict, task_id: str) -> Dict[str, Any]:
     for attempt in range(max_attempts):
         try:
             time.sleep(1.0)   # Basic rate limit pacing
-            response = client.chat.completions.create(
+            response = client.responses.create(
                 model=DEFAULT_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
-                ],
-                temperature=0.1,
-                max_tokens=120,
+                instructions=SYSTEM_PROMPT,
+                input=prompt,
+                temperature=0.1
             )
 
-            text = _extract_response_text(response)
+            text = _extract_response_text(response.output_text)
             decision = _extract_json(text)
             return {
                 "global_charge_rate": float(max(-1.0, min(1.0, decision.get("global_charge_rate", 0.0)))),
