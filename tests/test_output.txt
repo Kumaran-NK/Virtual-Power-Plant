@@ -1,23 +1,9 @@
-(openenv-vpp) PS C:\Users\admin\Documents\New folder (5)\Virtual-Power-Plant> & "c:\Users\admin\Documents\New folder (5)\Virtual-Power-Plant\.venv\Scripts\python.exe" "c:/Users/admin/Documents/New folder (5)/Virtual-Power-Plant/.tests/test_inference.py"
-[INFO] Using Groq client with model: llama-3.1-8b-instant
+[INFO] Example inference output
 [WARNING] Missing expected env vars: HF_TOKEN
-[START] task=easy-arbitrage env=vpp model=llama-3.1-8b-instant
+[START] task=easy-arbitrage env=vpp model=<model-name>
 [STEP] step=1 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-1.0,"min_reserve_pct":0.0,"p2p_export_rate":0.0} reward=6.25 done=false error=null
 [STEP] step=2 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.0,"p2p_export_rate":0.0} reward=3.12 done=false error=null
-[STEP] step=3 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.6} reward=3.33 done=false error=null
-[STEP] step=4 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.5} reward=3.40 done=false error=null
-[STEP] step=5 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.8} reward=3.72 done=false error=null
-[STEP] step=6 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.0} reward=3.12 done=false error=null
-[STEP] step=7 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.5} reward=1.69 done=false error=null
-[STEP] step=8 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.5} reward=1.79 done=false error=null
-[STEP] step=9 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.0} reward=1.12 done=false error=null
-[STEP] step=10 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.0} reward=1.12 done=false error=null
-[STEP] step=11 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.5} reward=2.05 done=false error=null
-[STEP] step=12 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.5} reward=2.13 done=false error=null
-[STEP] step=13 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.5} reward=2.21 done=false error=null
-[INFO] Rate limit hit. Retrying in 1s...
-[INFO] Rate limit hit. Retrying in 4s...
-[STEP] step=14 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.5} reward=2.29 done=false error=null
+[INFO] Additional step output omitted in this sanitized example.
 [STEP] step=15 action={"accept_dr_bid":false,"defer_ev_charging":0.0,"global_charge_rate":-0.5,"min_reserve_pct":0.2,"p2p_export_rate":0.8} reward=3.10 done=false error=null
 [INFO] Rate limit hit. Retrying in 1s...
 [INFO] Rate limit hit. Retrying in 4s...
