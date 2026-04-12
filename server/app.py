@@ -409,9 +409,6 @@ async def get_baseline(
             return _baseline_result
         baseline_error = _baseline_error
 
-    if baseline_error:
-        return JSONResponse(status_code=500, content={"error": baseline_error})
-
     baseline_path = _baseline_scores_path()
     try:
         with open(baseline_path, "r", encoding="utf-8") as f:
@@ -430,6 +427,8 @@ async def get_baseline(
                 return scores
             except json.JSONDecodeError as e:
                 raise HTTPException(status_code=500, detail=f"Invalid fallback baseline score file: {e}") from e
+        if baseline_error:
+            return JSONResponse(status_code=500, content={"error": baseline_error})
         empty = {tid: {"aggregate_score": 0.0, "note": "Run baseline_inference.py"} for tid in ALL_TASK_IDS}
         return empty
     except json.JSONDecodeError as e:

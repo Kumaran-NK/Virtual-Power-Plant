@@ -446,20 +446,21 @@ class VppEnvironment(Environment):
         zone_b_count = len(zone_b_assets)
         if s >= 32 and zone_b_count > 0:
             base_ev_kw = 1.2
+            old_debt_kwh = self._ev_defer_debt_kwh
             deferred_kwh = base_ev_kw * ev_defer_frac * 0.25 * zone_b_count
-            self._ev_defer_debt_kwh += deferred_kwh
             ev_adder_kw = base_ev_kw * (1.0 - ev_defer_frac)
+            replay_kwh = 0.0
 
             # Replay deferred EV energy progressively; force full replay at/after deadline.
-            if self._ev_defer_debt_kwh > 0:
+            if old_debt_kwh > 0:
                 if s < EV_DEFER_DEADLINE:
                     remaining_steps = max(1, EV_DEFER_DEADLINE - s)
-                    replay_kwh = self._ev_defer_debt_kwh / remaining_steps
+                    replay_kwh = old_debt_kwh / remaining_steps
                 else:
-                    replay_kwh = self._ev_defer_debt_kwh
+                    replay_kwh = old_debt_kwh
 
                 ev_adder_kw += replay_kwh / (0.25 * zone_b_count)
-                self._ev_defer_debt_kwh = max(0.0, self._ev_defer_debt_kwh - replay_kwh)
+            self._ev_defer_debt_kwh = max(0.0, old_debt_kwh - replay_kwh) + deferred_kwh
 
         p2p_price_usd = price_usd * _P2P_PRICE_FRACTION
         # P2P exports from Zone B are capped by Zone A's absorbable deficit.
@@ -1123,7 +1124,7 @@ class VppEnvironment(Environment):
 
         payload = {
             "timestamp": now,
-            "step_id": self._current_step,
+            "step_id": idx,
             "telemetry": telemetry,
             "zone_aggregates": zone_aggregates,
             "grid_frequency_hz": self._grid_frequency(idx),

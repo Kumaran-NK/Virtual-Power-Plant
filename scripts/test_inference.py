@@ -378,6 +378,8 @@ def run_episode(task_id: str) -> float:
                             saw_pareto_score = True
 
                     last_action_error = metadata_obj.get("last_action_error")
+                    if last_action_error not in (None, ""):
+                        had_step_failure = True
                     effective_error = (
                         str(last_action_error)
                         if last_action_error not in (None, "")
