@@ -72,7 +72,8 @@ htmlcov/
 .agents
 .claude
 .codex
-openenv_vpp.egg-info
-.env
-.tests/
 .research/
+.github/
+
+tests/
+scripts/

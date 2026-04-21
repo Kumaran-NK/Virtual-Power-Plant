@@ -319,6 +319,8 @@ def run_episode(task_id: str) -> float:
     done = False
     success = False
     score = 0.0
+    saw_pareto_score = False
+    had_step_failure = False
 
     try:
         sys.stdout.write(f"[START] task={task_id} env={BENCHMARK} model={DEFAULT_MODEL}\n")
@@ -364,13 +366,18 @@ def run_episode(task_id: str) -> float:
                     if not isinstance(metadata_obj, dict):
                         metadata_obj = {}
 
-                    pareto_obj = metadata_obj.get("pareto_score")
+                    pareto_obj = obs.get("pareto_score") if isinstance(obs, dict) else None
+                    if not isinstance(pareto_obj, dict):
+                        pareto_obj = metadata_obj.get("pareto_score")
                     if isinstance(pareto_obj, dict):
                         agg = pareto_obj.get("aggregate_score")
                         if isinstance(agg, (int, float)):
                             score = _strict_open_unit_interval(float(agg))
+                            saw_pareto_score = True
 
                     last_action_error = metadata_obj.get("last_action_error")
+                    if last_action_error not in (None, ""):
+                        had_step_failure = True
                     effective_error = (
                         str(last_action_error)
                         if last_action_error not in (None, "")
@@ -386,6 +393,7 @@ def run_episode(task_id: str) -> float:
                     sys.stdout.flush()
 
                 except Exception as step_err:
+                    had_step_failure = True
                     rewards.append(0.0)
                     step += 1
                     action_json = json.dumps(action_data, separators=(",", ":"), sort_keys=True)
@@ -397,14 +405,10 @@ def run_episode(task_id: str) -> float:
                     sys.stdout.flush()
                     break
 
-        if score <= 0.0:
-            # Safety fallback for environments that don't emit pareto metadata.
-            if rewards:
-                positive = sum(1 for r in rewards if r > 0)
-                score = _strict_open_unit_interval(positive / len(rewards))
-            else:
-                score = SCORE_EPSILON
-        success = done and score > 0.0
+        if not saw_pareto_score:
+            score = SCORE_EPSILON
+        # Strong success criteria: finished episode + authoritative pareto score + no step failures.
+        success = done and saw_pareto_score and not had_step_failure
 
     except Exception as outer_err:
         # [END] line even on failure

@@ -188,6 +188,17 @@ class VppObservation(Observation):
       dr_bid                     — active demand-response bid details
       ev_defer_deadline_step     — step by which deferred EV charging must be repaid
       p2p_last_revenue_usd       — P2P revenue earned in the previous step
+    pareto_score               — current multi-objective grade snapshot
+    safety_margin_pct          — mean SoC minus active reserve floor
+    emergency_active           — true during frequency or islanding emergency
+    demand_shed_this_step_kwh  — unmet demand during constrained operation
+    cumulative_demand_shed_kwh — accumulated unmet demand for episode
+    carbon_earned_this_step    — solar-derived carbon credits earned this step
+    carbon_spent_this_step     — carbon credits spent this step
+    grid_frequency_trend_hz    — trailing 3-step grid-frequency history
+    response_latency_steps_to_emergency — steps to first non-zero emergency discharge
+    forecast_realtime_error_price_usd   — actual minus forecast price at current step
+    forecast_realtime_error_solar_kw    — actual minus forecast solar at current step
             note: reward, done, and metadata are inherited from OpenEnv's base
                         Observation model and surfaced unchanged here.
     """
@@ -267,7 +278,7 @@ class VppObservation(Observation):
 
     # ── Demand Response ───────────────────────────────────────────────────────
     dr_bid: DRBid = Field(
-        default_factory=lambda: DRBid(),
+        default_factory=lambda: DRBid(active=False, premium_multiplier=1.0, committed_power_kw=0.0, committed_steps=0, steps_remaining=0), 
         description="Current demand-response bid posted by the grid operator.",
     )
     ev_defer_deadline_step: int = Field(
@@ -279,6 +290,53 @@ class VppObservation(Observation):
     p2p_last_revenue_usd: float = Field(
         0.0,
         description="USD earned by Zone B in the previous step via P2P sales to Zone A.",
+    )
+    safety_margin_pct: float = Field(
+        0.0,
+        description="Mean SoC minus active reserve floor, expressed in percentage points.",
+    )
+    emergency_active: bool = Field(
+        False,
+        description="True when frequency emergency or islanding event is active.",
+    )
+    demand_shed_this_step_kwh: float = Field(
+        0.0,
+        description="Estimated unmet demand this step when batteries hit emergency reserve limits.",
+    )
+    cumulative_demand_shed_kwh: float = Field(
+        0.0,
+        description="Cumulative unmet demand across all homes for the episode.",
+    )
+    carbon_earned_this_step: float = Field(
+        0.0,
+        description="Carbon credits earned from solar generation in the current step.",
+    )
+    carbon_spent_this_step: float = Field(
+        0.0,
+        description="Carbon credits spent on high-emission grid purchases in the current step.",
+    )
+    grid_frequency_trend_hz: List[float] = Field(
+        default_factory=list,
+        description="Trailing 3-step grid frequency trend including current step.",
+    )
+    response_latency_steps_to_emergency: int = Field(
+        -1,
+        description="Steps between emergency onset and first non-zero fleet discharge (-1 if not triggered yet).",
+    )
+    forecast_realtime_error_price_usd: float = Field(
+        0.0,
+        description="Current step actual_price - forecast_price (USD/MWh).",
+    )
+    forecast_realtime_error_solar_kw: float = Field(
+        0.0,
+        description="Current step actual_solar - forecast_solar (kW/home).",
+    )
+    pareto_score: Optional[dict] = Field(
+        default=None,
+        description=(
+            "Current Pareto score snapshot with component scores and aggregate_score. "
+            "Exposed at top level because some transports may omit observation metadata."
+        ),
     )
 
 
@@ -313,10 +371,34 @@ class VppState(State):
     blackout_events_count:    int   = Field(0, description="Steps where a battery hit 0 % while demand was non-zero.")
     safety_violations_count:  int   = Field(0, description="Cumulative count of per-step reserve violations.")
     grid_emergencies_ignored: int   = Field(0, description="Steps where freq < 49.8 Hz but agent was not discharging.")
-    islanding_blackouts:      int   = Field(0, description="Homes that blacked out during grid islanding.")
+    islanding_blackouts:      int   = Field(
+        0,
+        description="Cumulative blackout home-steps during grid islanding (affected homes summed each step).",
+    )
+    islanding_blackout_home_steps: int = Field(
+        0,
+        description="Alias of islanding_blackouts for explicit home-step semantics.",
+    )
+    islanding_blackout_unique_homes: int = Field(
+        0,
+        description="Unique homes that experienced at least one critical-load blackout during islanding.",
+    )
+    cumulative_demand_shed_kwh: float = Field(
+        0.0,
+        description="Total unmet demand (kWh) caused by emergency reserve constraints.",
+    )
+    response_latency_steps_to_emergency: int = Field(
+        -1,
+        description="Steps between first emergency signal and first non-zero fleet discharge.",
+    )
     dr_bids_accepted:         int   = Field(0, description="Number of DR bids accepted.")
     dr_bids_fulfilled:        int   = Field(0, description="Number of DR commitments successfully fulfilled.")
     dr_bids_failed:           int   = Field(0, description="Number of DR commitments that failed.")
+    dr_consecutive_failures:  int   = Field(0, description="Current streak of consecutive failed DR windows.")
+    dr_fulfillment_ratio_sum: float = Field(
+        0.0,
+        description="Sum of per-window DR fulfillment ratios (used to compute mean fulfillment quality).",
+    )
     ev_defer_debt_kwh:        float = Field(0.0, description="kWh of EV charging still owed (deferred but not repaid).")
 
     # ── Battery health ────────────────────────────────────────────────────────
@@ -370,11 +452,26 @@ class ParetoScore(BaseModel):
     cumulative_dr_bonus_usd:  float = Field(0.0)
     safety_violations:        int   = Field(0)
     grid_emergencies_ignored: int   = Field(0)
-    islanding_blackouts:      int   = Field(0)
+    islanding_blackouts:      int   = Field(
+        0,
+        description="Cumulative blackout home-steps during grid islanding (affected homes summed each step).",
+    )
+    islanding_blackout_home_steps: int = Field(
+        0,
+        description="Explicit home-step blackout metric used for safety deduction.",
+    )
+    islanding_blackout_unique_homes: int = Field(
+        0,
+        description="Unique homes affected by at least one islanding blackout event.",
+    )
+    cumulative_demand_shed_kwh: float = Field(0.0)
+    response_latency_steps_to_emergency: int = Field(-1)
     carbon_credits_balance:   float = Field(0.0)
     mean_state_of_health:     float = Field(1.0)
     dr_bids_fulfilled:        int   = Field(0)
     dr_bids_failed:           int   = Field(0)
+    dr_consecutive_failures:  int   = Field(0)
+    dr_mean_fulfillment_ratio: float = Field(0.0)
     steps_completed:          int   = Field(0)
     done:                     bool  = Field(False)
 
